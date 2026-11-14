@@ -56,9 +56,10 @@ void CoopBeforeHud();
 const Matrix4x4* CoopCameraMatrix(InstanceContext* instance);
 
 // ---- The second player as "the player" -------------------------------------------------------------------------------------
-// While the second player's character steps (its agent's frame, its own scripts) or a script started by it runs (a creature
-// it landed on, a crate it broke), the game's player (g_PlayerInstance: the scripts' "player", IsPlayer) is the second player:
-// the creature bounces it, the pickups fly to it. Nothing changes when the instance and originator aren't the second player's.
+// While the second player's character steps (its agent's frame, its own scripts), a script started by it runs, or the script
+// of anything nearer to it than to the first player runs (a creature it landed on, an enemy beside it), the game's player
+// (g_PlayerInstance, the progress's played character, g_PlayerCharacter: the scripts' "player") is the second player: the
+// creature bounces it, the enemies go for it, the pickups fly to it. The first player's own scripts always see the first.
 struct Reference;
 struct ReferencedObject;
 class CoopPlayerScope
@@ -84,3 +85,9 @@ void CoopQueueHud();
 // While the second player's half is being drawn (first): a model drawn stays to be drawn again in the first player's half
 // (ModelNode::Draw forgets what it drew: retail draws a model once a frame)
 bool CoopKeepsDrawn();
+// The distance an instance is seen at (scenery.cpp SetSeen): on a split screen the nearer of the two halves', so what the second
+// player is near animates at its full rate however far the first player is
+u32 CoopSeen(InstanceContext* instance, u32 distance);
+// Before a skin's joints are multiplied in place for its draw (DrawOgi): a copy for the first of the two halves' draws
+struct GameOGI;
+void CoopSkinMatrices(const GameOGI* ogi, Matrix4x4** matrices);

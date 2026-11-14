@@ -89,9 +89,12 @@ void DrawOgi(GameOGI* ogi, const Matrix4x4* matrix, JointMatrices* joints, const
         return;
     }
 
+    // TwinsanityEvolved: the split screen draws the skin twice, the joints are multiplied in place (game/coop.h)
+    Matrix4x4* animated = matrices;
+    CoopSkinMatrices(ogi, &matrices);
     for (u32 index = 0; index < ogi->jointCount; index++)
     {
-        Platform::Math::MultiplyByParent(&ogi->jointMatrices[index], &matrices[index], &matrices[index]);
+        Platform::Math::MultiplyByParent(&ogi->jointMatrices[index], &animated[index], &matrices[index]);
     }
 
     if (ogi->hasSkin != 0)

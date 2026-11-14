@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/scenery.h"
 #include "game/volumes.h"
 
@@ -47,7 +48,8 @@ inline void Touch(const void* address)
 
 void SetSeen(InstanceContext* instance, u32 seen)
 {
-    instance->seen = seen;
+    // TwinsanityEvolved: on a split screen, the nearer of the two halves' (game/coop.h)
+    instance->seen = CoopSeen(instance, seen);
 }
 
 void ClearSeen(InstanceContext* instance)

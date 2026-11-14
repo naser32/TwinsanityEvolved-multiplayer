@@ -559,26 +559,250 @@ const Matrix4x4* CoopCameraMatrix(InstanceContext* instance)
     return &place->matrix;
 }
 
+// ---- the second player as "the player" ---------------------------------------------------------------------------------
+namespace
+{
+// The game's own player (the first), kept while a scope has the second player in its place, and how deep the scopes are
+struct RealPlayer
+{
+    Reference* instance;
+    Reference* handle;
+    u32 character;
+    PlayerCharacter* agent;
+    PlayerCharacter* agent2;
+    CharacterPart* part;
+    CharacterPart* part2;
+};
+RealPlayer g_Real;
+u32 g_ScopeDepth = 0;
+bool g_ScopeSecond = false;
+
+void PlaySecond()
+{
+    GameController* controller = G_GameController;
+    CharacterAgent* character = CharacterOf(Second());
+    g_PlayerInstance = g_Second;
+    if (g_Real.character < GameProgress::Characters)
+    {
+        controller->progress.characters[g_Real.character] = g_Second;
+    }
+
+    auto* agent = reinterpret_cast<PlayerCharacter*>(character);
+    auto* part = static_cast<CharacterPart*>(character->part);
+    g_PlayerCharacter = agent;
+    g_PlayerCharacter2 = agent;
+    g_PlayerPart = part;
+    g_PlayerPart2 = part;
+    g_ScopeSecond = true;
+}
+
+void PlayFirst()
+{
+    // (a character switch made inside keeps what it set)
+    if (g_PlayerInstance == g_Second)
+    {
+        GameController* controller = G_GameController;
+        g_PlayerInstance = g_Real.instance;
+        if (g_Real.character < GameProgress::Characters && controller->progress.characters[g_Real.character] == g_Second)
+        {
+            controller->progress.characters[g_Real.character] = g_Real.handle;
+        }
+
+        g_PlayerCharacter = g_Real.agent;
+        g_PlayerCharacter2 = g_Real.agent2;
+        g_PlayerPart = g_Real.part;
+        g_PlayerPart2 = g_Real.part2;
+    }
+
+    g_ScopeSecond = false;
+}
+
+f32 SquaredTo(InstanceContext* from, const Vector4& at)
+{
+    Vector4 p = PositionOf(from);
+    f32 dx = p.x - at.x, dy = p.y - at.y, dz = p.z - at.z;
+    return dx * dx + dy * dy + dz * dz;
+}
+}
+
 CoopPlayerScope::CoopPlayerScope(const void* instance, const void* originator) : saved(nullptr), swapped(false)
 {
     InstanceContext* second = Second();
-    if (second == nullptr || g_PlayerInstance == g_Second || (instance != second && originator != second))
+    if (second == nullptr || second->place == nullptr || CharacterOf(second) == nullptr)
     {
         return;
     }
 
-    saved = g_PlayerInstance;
-    g_PlayerInstance = g_Second;
+    GameController* controller = G_GameController;
+    Reference* firstHandle = g_ScopeDepth != 0 ? g_Real.instance : g_PlayerInstance;
+    auto* first = firstHandle != nullptr ? static_cast<InstanceContext*>(firstHandle->object) : nullptr;
+    if (first == nullptr || first == second)
+    {
+        return;
+    }
+
+    // Whose it is: the second player's own (or started by it), the first player's own, else the nearer player's
+    bool wantsSecond;
+    if (instance == second || originator == second)
+    {
+        wantsSecond = true;
+    }
+    else if (instance == first || originator == first)
+    {
+        wantsSecond = false;
+    }
+    else
+    {
+        auto* owner = static_cast<InstanceContext*>(const_cast<void*>(instance));
+        if (owner == nullptr || owner->place == nullptr || first->place == nullptr)
+        {
+            return;
+        }
+
+        Vector4 at = PositionOf(owner);
+        wantsSecond = SquaredTo(second, at) < SquaredTo(first, at);
+    }
+
+    if (g_ScopeDepth == 0)
+    {
+        if (!wantsSecond)
+        {
+            return;
+        }
+
+        u32 character = controller->progress.play.character;
+        g_Real.instance = g_PlayerInstance;
+        g_Real.character = character;
+        g_Real.handle = character < GameProgress::Characters ? controller->progress.characters[character] : nullptr;
+        g_Real.agent = g_PlayerCharacter;
+        g_Real.agent2 = g_PlayerCharacter2;
+        g_Real.part = g_PlayerPart;
+        g_Real.part2 = g_PlayerPart2;
+    }
+
     swapped = true;
+    saved = g_ScopeSecond ? g_Second : nullptr;
+    g_ScopeDepth++;
+    if (wantsSecond != g_ScopeSecond)
+    {
+        if (wantsSecond)
+        {
+            PlaySecond();
+        }
+        else
+        {
+            PlayFirst();
+        }
+    }
 }
 
 CoopPlayerScope::~CoopPlayerScope()
 {
-    // (a character switch inside keeps what it set)
-    if (swapped && g_PlayerInstance == g_Second)
+    if (!swapped)
     {
-        g_PlayerInstance = saved;
+        return;
     }
+
+    g_ScopeDepth--;
+    bool wasSecond = saved != nullptr && g_ScopeDepth != 0;
+    if (wasSecond != g_ScopeSecond)
+    {
+        if (wasSecond && Second() != nullptr && CharacterOf(Second()) != nullptr)
+        {
+            PlaySecond();
+        }
+        else
+        {
+            PlayFirst();
+        }
+    }
+}
+
+// ---- how near an instance was seen: the nearer of the two halves ---------------------------------------------------------
+namespace
+{
+struct SeenEntry
+{
+    const InstanceContext* instance;
+    u32 distance;
+    u32 frame;
+};
+constexpr u32 SeenSlots = 4096;
+SeenEntry g_Seen[SeenSlots];
+
+SeenEntry* SeenSlot(const InstanceContext* instance, bool make)
+{
+    u32 frame = g_RenderedFrames;
+    u32 at = (reinterpret_cast<u32>(instance) >> 4) & (SeenSlots - 1);
+    for (u32 probe = 0; probe < 16; probe++)
+    {
+        SeenEntry* entry = &g_Seen[(at + probe) & (SeenSlots - 1)];
+        if (entry->frame == frame && entry->instance == instance)
+        {
+            return entry;
+        }
+
+        if (entry->frame != frame)
+        {
+            if (!make)
+            {
+                return nullptr;
+            }
+
+            entry->instance = instance;
+            entry->frame = frame;
+            entry->distance = ~0u;
+            return entry;
+        }
+    }
+
+    return nullptr;
+}
+}
+
+u32 CoopSeen(InstanceContext* instance, u32 distance)
+{
+    if (!g_Split)
+    {
+        return distance;
+    }
+
+    if (g_StampMark != 0)
+    {
+        // The second player's half (drawn first): kept for the first player's
+        SeenEntry* entry = SeenSlot(instance, true);
+        if (entry != nullptr && distance < entry->distance)
+        {
+            entry->distance = distance;
+        }
+
+        return distance;
+    }
+
+    SeenEntry* entry = SeenSlot(instance, false);
+    return entry != nullptr && entry->distance < distance ? entry->distance : distance;
+}
+
+void CoopSkinMatrices(const GameOGI* ogi, Matrix4x4** matrices)
+{
+    if (!CoopKeepsDrawn())
+    {
+        return;
+    }
+
+    // The skin's draw multiplies the joints' matrices in place: the first half's draw works on a copy, the second on them
+    auto* copy = static_cast<Matrix4x4*>(Platform::Graphics::AllocFrameMemory(ogi->jointCount, sizeof(Matrix4x4)));
+    if (copy == nullptr)
+    {
+        return;
+    }
+
+    for (u32 index = 0; index < ogi->jointCount; index++)
+    {
+        copy[index] = (*matrices)[index];
+    }
+
+    *matrices = copy;
 }
 
 bool CoopTakesWumpa(InstanceContext* from, u32 count)
