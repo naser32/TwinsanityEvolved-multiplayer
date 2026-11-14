@@ -20,7 +20,10 @@ This fork adds a second player on a second controller, on a split screen (local;
 - During cutscenes, vehicles and loads player 2 is taken away, and comes back when play goes on.
 - Hold **SELECT** on the second controller for a second to leave.
 - While player 2 plays, the screen is split: player 1 on the top half, player 2 on the bottom half, each with their own camera
-  (the right stick turns your own). A tap of **SELECT** on the second controller switches to left / right halves and back.
+  (the right stick turns your own).
+- **Options > Two players** has the mod's settings: *camera* (close / normal / far / very far: how much each half sees
+  around its character; farther draws more), *split screen* (top and bottom / left and right) and *camera tilt* (how far
+  down a top or bottom half's camera looks). They last until the game is closed.
 - Known for now: decals show in player 1's half only; frame interpolation (above 60 fps) pauses
   while the screen is split.
 

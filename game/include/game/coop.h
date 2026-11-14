@@ -100,9 +100,20 @@ void CoopNearerListener(const Vector4* at, Vector4* local);
 // A half's view (see coop.cpp): what the view's aspect is multiplied by, the projection's height set after the view's
 // update, and the field of view its frustum is made for (with the aspect times CoopViewShape)
 struct RenderView;
-f32 CoopViewAspect(const RenderTargetDescription* target);
 void CoopFixProjection(const RenderTargetDescription* target, RenderView* view);
 s32 CoopViewFov(const RenderTargetDescription* target, s32 fov);
 // A top or bottom half's camera tilted down for its scene (before the view's update), and the cameras put back
 void CoopTiltCamera(const RenderTargetDescription* target, RenderView* view);
 void CoopUntiltCameras();
+// The two players' options (the Options menu's "two players" page, olegpages.cpp): each a row's choice
+enum CoopOption : u32
+{
+    // How far the camera sees around the character: close, normal, far, very far
+    CoopOptionCamera,
+    // The split: top and bottom, left and right
+    CoopOptionSplit,
+    // How far down a top or bottom half's camera looks: level, some, more
+    CoopOptionTilt,
+    CoopOptionCount,
+};
+s32 CoopOptionValue(u32 option);

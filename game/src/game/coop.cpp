@@ -200,6 +200,24 @@ InstanceContext* FirstInPlay(GameController* controller)
     return first;
 }
 
+// ---- the two players' options (the Options menu's page: olegpages.cpp) ----------------------------------------------------
+// How much wider than a game played alone a half sees (the camera's "distance": a wider view shows more around the character,
+// and draws more), and how far below its middle a top or bottom half looks (a share of the full view's half height)
+constexpr f32 CameraWiden[] = {1.0f, 1.3f, 1.6f, 2.0f};
+constexpr f32 CameraTilt[] = {0.0f, 0.42f, 0.6f};
+
+f32 Widen()
+{
+    s32 value = CoopOptionValue(CoopOptionCamera);
+    return CameraWiden[value < 0 ? 0 : value > 3 ? 3 : value];
+}
+
+f32 TiltShare()
+{
+    s32 value = CoopOptionValue(CoopOptionTilt);
+    return CameraTilt[value < 0 ? 0 : value > 2 ? 2 : value];
+}
+
 // ---- the split screen ----------------------------------------------------------------------------------------------------
 bool g_SideBySide = false;
 bool g_Split = false;
@@ -280,6 +298,7 @@ void EndSplit(GameController* controller)
 // The split screen begun, turned or ended with the second player's camera
 void StepSplit(GameController* controller)
 {
+    g_SideBySide = CoopOptionValue(CoopOptionSplit) == 1;
     InstanceContext* camera = SecondCamera();
     u32 state = controller->State();
     bool wants = camera != nullptr && (state == GameController::StatePlaying || state == GameController::StatePaused);
@@ -351,20 +370,8 @@ void StepPlayers(GameController* controller)
         return;
     }
 
-    // Leaving: SELECT held; a tap turns the split screen
-    if (GetButtonState(pad, PadSelect, false))
-    {
-        g_Selecting++;
-    }
-    else
-    {
-        if (g_Selecting > 0 && g_Selecting < LeaveFrames)
-        {
-            g_SideBySide = !g_SideBySide;
-        }
-
-        g_Selecting = 0;
-    }
+    // Leaving: SELECT held (the split's direction is the options page's)
+    g_Selecting = GetButtonState(pad, PadSelect, false) ? g_Selecting + 1 : 0;
 
     if (g_Selecting >= LeaveFrames)
     {
@@ -911,6 +918,12 @@ void CoopQueueHud()
         return;
     }
 
+    // (not over the pause menu and its pages: as the first player's count)
+    if (G_GameController->State() != GameController::StatePlaying)
+    {
+        return;
+    }
+
     // The second player's wumpa fruit at its half's top left: the HUD's own wumpa sprite, the count beside it and a small P2
     constexpr f32 IconWidth = 0.06f;
     constexpr f32 IconHeight = 0.08f;
@@ -1011,42 +1024,54 @@ void CoopNearerListener(const Vector4* at, Vector4* local)
 // and sees half the height instead: things are the size they are in a game played alone. A left or right half keeps the
 // height and sees half the width.
 
-f32 CoopViewAspect(const RenderTargetDescription* target)
+namespace
 {
-    f32 shape = CoopViewShape(target);
-    return shape < 1.0f ? shape : 1.0f;
+// What a half's vertical field of view (its tangent) is of the lens's: a top or bottom half's the wider view's over its shape,
+// a left or right half's the wider view's
+f32 VerticalShare(f32 shape)
+{
+    return 1.0f < shape ? Widen() / shape : shape < 1.0f ? Widen() : 1.0f;
+}
 }
 
 void CoopFixProjection(const RenderTargetDescription* target, RenderView* view)
 {
     // (never split: the projection is the game's own, untouched)
-    if (g_Whole == nullptr || view->inverseAspect == 0.0f)
+    InstanceContext* camera = view->cameraObject != nullptr ? static_cast<InstanceContext*>(view->cameraObject->object) : nullptr;
+    auto* lens = camera != nullptr ? static_cast<CameraLensNode*>(GetGameNode(&camera->nodes, NodeCameraLens)) : nullptr;
+    if (g_Whole == nullptr || lens == nullptr)
     {
         return;
     }
 
+    // The projection made from the lens each time (RenderView::SetProjection's, with the half's shape): whatever the view kept
     f32 shape = CoopViewShape(target);
-    f32 cotangent = view->projection.m[0][0] / view->inverseAspect;
-    view->projection.m[1][1] = 1.0f < shape ? cotangent * shape : cotangent;
+    f32 vertical = VerticalShare(shape);
+    s32 half = static_cast<s32>(static_cast<f32>(lens->fov) * 0.5f);
+    f32 cotangent = 1.0f / TanOfAngle(&half);
+    f32 inverseAspect = 1.0f / (lens->pixelAspect * TvAspect() * shape);
+    view->projection.m[1][1] = cotangent / vertical;
+    view->projection.m[0][0] = inverseAspect * cotangent / vertical;
 }
 
 s32 CoopViewFov(const RenderTargetDescription* target, s32 fov)
 {
-    f32 shape = CoopViewShape(target);
-    if (!(1.0f < shape))
+    f32 vertical = VerticalShare(CoopViewShape(target));
+    if (g_Whole == nullptr || vertical == 1.0f)
     {
         return fov;
     }
 
-    // The angle whose half's tangent is the lens's half's over the shape (the tangent grows with the angle: halved in)
+    // The angle whose half's tangent is the lens's half's times the share (the tangent grows with the angle: halved in)
     s32 half = static_cast<s32>(static_cast<f32>(fov) * 0.5f);
-    f32 wanted = TanOfAngle(&half) / shape;
+    f32 wanted = TanOfAngle(&half) * vertical;
     s32 low = 0;
-    s32 high = half;
+    s32 high = half * 2;
     for (s32 step = 0; step < 24 && low + 1 < high; step++)
     {
         s32 middle = low + (high - low) / 2;
-        if (TanOfAngle(&middle) < wanted)
+        f32 tangent = TanOfAngle(&middle);
+        if (0.0f < tangent && tangent < wanted)
         {
             low = middle;
         }
@@ -1065,9 +1090,6 @@ s32 CoopViewFov(const RenderTargetDescription* target, s32 fov)
 // character is in the half's middle; the camera's own matrix is put back after the scenes (nothing else sees the tilt).
 namespace
 {
-// How far below the view's middle the half looks: this share of the full view's half height
-constexpr f32 TiltShare = 0.42f;
-
 struct TiltedCamera
 {
     ObjectPlace* place;
@@ -1125,7 +1147,12 @@ void CoopTiltCamera(const RenderTargetDescription* target, RenderView* view)
 
     RotateAndTranslate(place);
     s32 half = static_cast<s32>(static_cast<f32>(lens->fov) * 0.5f);
-    f32 tangent = TiltShare * TanOfAngle(&half);
+    f32 tangent = TiltShare() * TanOfAngle(&half);
+    if (tangent == 0.0f)
+    {
+        return;
+    }
+
     f32 cosine = 1.0f / __builtin_sqrtf(1.0f + tangent * tangent);
     f32 sine = tangent * cosine;
     Vector4* up = RowOf(&place->matrix, 1);

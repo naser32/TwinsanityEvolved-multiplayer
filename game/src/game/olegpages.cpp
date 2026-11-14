@@ -3,6 +3,7 @@
 #include "game/clock.h"
 #include "game/colour.h"
 #include "game/controllers.h"
+#include "game/coop.h"
 #include "game/gamecontroller.h"
 #include "game/language.h"
 #include "game/math.h"
@@ -1097,6 +1098,75 @@ OlegPage* ConstructModsPage(MenuPage* options)
     return page;
 }
 
+// TwinsanityEvolved (naser949's two-player mod, game/coop.h): the Options menu's TWO PLAYERS page -- one choice row per
+// option, read by the mod each frame (CoopOptionValue). Static, as the mods page: the heap holds what it held. IDs none of the
+// pages use
+constexpr const char* CoopPageTitle = "two players";
+constexpr u32 CoopPageItem = 0x31;
+constexpr u32 CoopRowFirstItem = 0x60;
+constexpr const char* CoopRowTitles[CoopOptionCount] = {"camera", "split screen", "camera tilt"};
+const char* g_CoopCameraWords[] = {"close", "normal", "far", "very far"};
+const char* g_CoopSplitWords[] = {"top and bottom", "left and right"};
+const char* g_CoopTiltWords[] = {"level", "down", "more down"};
+const char** const CoopRowWords[CoopOptionCount] = {g_CoopCameraWords, g_CoopSplitWords, g_CoopTiltWords};
+constexpr u32 CoopRowChoices[CoopOptionCount] = {4, 2, 3};
+s32 g_CoopValues[CoopOptionCount] = {1, 0, 1};
+OlegPage g_CoopPageStorage;
+OlegPage* g_CoopPage = nullptr;
+ChoiceItem g_CoopRows[CoopOptionCount];
+BackItem g_CoopBackStorage;
+
+// The rows' choices kept (the page is made again with each menu)
+void KeepCoopValues()
+{
+    if (g_CoopPage == nullptr)
+    {
+        return;
+    }
+
+    for (u32 option = 0; option < CoopOptionCount; option++)
+    {
+        s32 value;
+        g_CoopRows[option].GetIntValue(0, &value);
+        if (value >= 0 && static_cast<u32>(value) < CoopRowChoices[option])
+        {
+            g_CoopValues[option] = value;
+        }
+    }
+}
+
+OlegPage* ConstructCoopPage(MenuPage* options)
+{
+    OlegPage* page = OlegPage::Construct(&g_CoopPageStorage, CoopPageTitle, options);
+    for (u32 option = 0; option < CoopOptionCount; option++)
+    {
+        ChoiceItem* row = ChoiceItem::Construct(&g_CoopRows[option], 0, CoopRowFirstItem + option, 0, 1, 0, MenuPlayers);
+        row->strings = CoopRowWords[option];
+        row->usesStrings = 1;
+        row->choices = CoopRowChoices[option];
+        row->SetRange(0, static_cast<s32>(CoopRowChoices[option]) - 1, 1, g_CoopValues[option]);
+        row->text = CoopRowTitles[option];
+        page->Add(row);
+    }
+
+    page->Add(BackItem::Construct(&g_CoopBackStorage, BackText, SubPageBackItem, options, MenuPlayers));
+    g_CoopPage = page;
+    return page;
+}
+
+void DestroyCoopPage()
+{
+    if (g_CoopPage == nullptr)
+    {
+        return;
+    }
+
+    KeepCoopValues();
+    g_CoopPage->vtable = g_OlegPageVTable;
+    g_CoopPage->MenuPage::Destroy(DestroyOnly);
+    g_CoopPage = nullptr;
+}
+
 void DestroyModsPage()
 {
     if (g_ModsPage == nullptr)
@@ -1288,12 +1358,21 @@ OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
         page->Add(LinkItem::ConstructNamed(Allocate<LinkItem>(), ModsPageTitle, ModsPageItem, mods, MenuPlayers));
     }
 
+    // TwinsanityEvolved: the two-player mod's page
+    page->Add(LinkItem::ConstructNamed(Allocate<LinkItem>(), CoopPageTitle, CoopPageItem, ConstructCoopPage(page), MenuPlayers));
     page->Add(back);
     return page;
 }
 
+s32 CoopOptionValue(u32 option)
+{
+    KeepCoopValues();
+    return option < CoopOptionCount ? g_CoopValues[option] : 0;
+}
+
 void OptionsPage::Destroy(u32 flags)
 {
+    DestroyCoopPage();
     DestroyModsPage();
     sound.vtable = g_OlegPageVTable;
     sound.MenuPage::Destroy(DestroyOnly);
