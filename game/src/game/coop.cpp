@@ -7,6 +7,8 @@
 #include "game/cutscenereader.h"
 #include "game/font.h"
 #include "game/objects.h"
+#include "game/oleg.h"
+#include "game/shapes.h"
 #include "game/overlay.h"
 #include "game/clock.h"
 #include "game/renderer.h"
@@ -208,7 +210,6 @@ Renderer* g_SecondRenderer = nullptr;
 RenderView* g_SecondView = nullptr;
 u32 g_StampMark = 0;
 constexpr u32 SecondPassMark = 0x8000;
-constexpr f32 HudTextScale = 0.75f;
 
 InstanceContext* SecondCamera()
 {
@@ -622,6 +623,12 @@ ReferencedObject* CoopLoadingFocus()
     return second != nullptr && second->chunk != nullptr ? second : nullptr;
 }
 
+bool CoopKeepsDrawn()
+{
+    // The second player's half is drawn first (its pass's mark set): what it draws is drawn again in the first player's half
+    return g_Split && g_StampMark != 0;
+}
+
 void CoopQueueHud()
 {
     if (!g_Split)
@@ -629,9 +636,33 @@ void CoopQueueHud()
         return;
     }
 
-    // The second player's wumpa fruit at its half's top right
+    // The second player's wumpa fruit at its half's top left: the HUD's own wumpa sprite, the count beside it and a small P2
+    constexpr f32 IconWidth = 0.06f;
+    constexpr f32 IconHeight = 0.08f;
     GameController* controller = G_GameController;
     Renderer* renderer = controller->renderer;
+    OLEG* oleg = &controller->oleg;
+    f32 left = g_SplitSideBySide ? 0.5f : 0.0f;
+    f32 top = g_SplitSideBySide ? 0.0f : 0.5f;
+    f32 iconX = left + 0.07f;
+    f32 iconY = top + 0.08f;
+    u32 colour;
+    GetColor(&colour, ColourWhite);
+
+    Sprite* sprite = &oleg->sprites[OLEG::SpriteWumpa];
+    if (sprite->material != nullptr && 0.0f < sprite->texture.width && 0.0f < sprite->texture.height)
+    {
+        Matrix4x4 matrix;
+        InitIdentityMatrix(&matrix);
+        matrix.m[0][0] = IconWidth / sprite->texture.width;
+        matrix.m[1][1] = IconHeight / sprite->texture.height;
+        // (a turned sprite is placed by its middle, another by its corner: SpriteWidget::Draw)
+        matrix.m[3][0] = sprite->turned != 0 ? iconX : iconX - IconWidth * 0.5f;
+        matrix.m[3][1] = sprite->turned != 0 ? iconY : iconY - IconHeight * 0.5f;
+        renderer->colour = colour;
+        QueuePlacedShape(renderer, &matrix, sprite, oleg->hudWumpaSprite.flags.layer);
+    }
+
     char text[16];
     u32 n = g_SecondWumpa;
     char digits[12];
@@ -643,9 +674,6 @@ void CoopQueueHud()
     } while (n != 0 && count < 11);
 
     s32 at = 0;
-    text[at++] = 'P';
-    text[at++] = '2';
-    text[at++] = ' ';
     while (count > 0)
     {
         text[at++] = digits[--count];
@@ -653,13 +681,13 @@ void CoopQueueHud()
 
     text[at] = 0;
     renderer->font = &controller->font;
-    u32 colour;
-    GetColor(&colour, ColourWhite);
     renderer->colour = colour;
-    renderer->textScale.x = HudTextScale;
-    renderer->textScale.y = HudTextScale;
-    renderer->textAlignment.value = TextAlignment::MiddleRight;
-    f32 x = g_SplitSideBySide ? 0.95f : 0.95f;
-    f32 y = g_SplitSideBySide ? 0.08f : 0.56f;
-    QueueText(renderer, text, x, y);
+    renderer->textScale.x = 1.0f;
+    renderer->textScale.y = 1.0f;
+    renderer->textAlignment.value = TextAlignment::MiddleLeft;
+    QueueText(renderer, text, iconX + 0.05f, iconY);
+    renderer->textScale.x = 0.5f;
+    renderer->textScale.y = 0.5f;
+    renderer->textAlignment.value = TextAlignment::Centred;
+    QueueText(renderer, "P2", iconX, iconY + 0.075f);
 }

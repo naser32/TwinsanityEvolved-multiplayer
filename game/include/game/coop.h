@@ -81,3 +81,6 @@ bool CoopTakesWumpa(InstanceContext* from, u32 count);
 ReferencedObject* CoopLoadingFocus();
 // The second player's count queued over its half (before the HUD is drawn)
 void CoopQueueHud();
+// While the second player's half is being drawn (first): a model drawn stays to be drawn again in the first player's half
+// (ModelNode::Draw forgets what it drew: retail draws a model once a frame)
+bool CoopKeepsDrawn();

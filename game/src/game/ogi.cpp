@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/animation.h"
 
 #include "game/chunkdata.h"
@@ -379,6 +380,12 @@ void ModelNode::Draw(const Matrix4x4* matrix, const Matrix4x4* chunkMatrix, Chun
         else
         {
             DrawOgi(drawnOgi, matrix, &drawnAnimator->matrices, &drawnAnimator->blendShapes, lights, mode);
+        }
+
+        // TwinsanityEvolved: the split screen draws the model again in the other player's half (game/coop.h)
+        if (CoopKeepsDrawn())
+        {
+            return;
         }
 
         drawnOgi = nullptr;
