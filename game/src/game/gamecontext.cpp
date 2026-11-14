@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/context.h"
 #include "game/copyprotection.h"
 #include "game/gamecontroller.h"
@@ -218,18 +219,32 @@ void GameContext::GameEndFrame(bool playingMovie)
     GameTimeController* clocks = G_GameClockController;
     g_RenderTarget = G_Renderer_->target;
     gameController->SetView(playingMovie);
-    renderers->DrawRendererScenes();
+    // TwinsanityEvolved: the two-player mod's split screen (game/coop.h): each renderer its player's view, the particles and
+    // decals in the first player's half, the HUD over the whole screen
+    if (!playingMovie)
+    {
+        CoopSetViews();
+    }
+
+    if (playingMovie || !CoopDrawScenes())
+    {
+        renderers->DrawRendererScenes();
+    }
+
     if (playingMovie)
     {
+        CoopUntiltCameras();
         gameController->Draw(playingMovie);
         return;
     }
 
+    CoopAfterScenes();
     f32 seconds = static_cast<f32>(static_cast<s32>(clocks->clocks[FirstClock].advance)) * g_SecondsPerClockUnit;
     UpdateAndDrawParticles(g_GameState == GameStatePaused, seconds);
     Platform::Graphics::UseHelperPrograms(Platform::Graphics::DecalPrograms, true);
     UpdateDecalsVU0(&g_DecalData, seconds);
     Platform::Graphics::DrawDecals(&g_DecalData);
+    CoopBeforeHud();
     gameController->Draw(0);
 }
 

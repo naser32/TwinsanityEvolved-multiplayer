@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/agents.h"
 
 #include "game/animation.h"
@@ -217,9 +218,21 @@ void KeepContact(Agent* agent, const ContactMessage* message)
 
 void Die(CharacterAgent* agent, InstanceContext* sender)
 {
+    // TwinsanityEvolved: two players -- the played character does not die while the other player's lives (game/coop.h)
+    if (CoopPrimaryDying(agent))
+    {
+        return;
+    }
+
     agent->buttons.locked.value = CharacterButtons::LockAll;
     agent->state.dead = 1;
     RunAgentEvent(agent, EventDied, reinterpret_cast<u32>(sender), 0, 0);
+}
+
+// TwinsanityEvolved: the two-player mod's way to Die (game/coop.h CoopKillCharacter, at the file's end)
+void KillForCoop(CharacterAgent* agent)
+{
+    Die(agent, nullptr);
 }
 
 // Invincible for 2 seconds after a hurt, unless it already is (StartInvincibility's kind 0 inline, its start time left)
@@ -1403,4 +1416,9 @@ void CharacterAgent::PlayRideSound(f32 strength)
 void CharacterAgent::Launch(f32 strength, const Vector4* velocity, InstanceContext* space)
 {
     PushBack(strength, velocity, EventStandingJump, space);
+}
+
+void CoopKillCharacter(CharacterAgent* agent)
+{
+    KillForCoop(agent);
 }

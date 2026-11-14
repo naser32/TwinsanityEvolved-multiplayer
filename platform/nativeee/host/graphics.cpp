@@ -885,6 +885,10 @@ void SlowPictureLine(uint64_t present, double gpu_wait_ms, double work_ms, doubl
                  (unsigned long long)present, ms, gpu_wait_ms, work_ms, present_ms, sections.empty() ? "" : " prof: ", sections.c_str());
 }
 
+// (the two-player mod's split screen: ViewScissor below)
+// Pictures left to show uninterpolated: a split picture holds two cameras, the interpolator re-projects with one (set by a
+// half's StartFrame, counted down a picture at a time)
+std::atomic<int> g_split_pictures{0};
 void RenderLoop() {
     auto& rt = g.rt;
     // with the game thread: interactive work (the engine's per-platform arm: macOS QoS, Windows SetThreadPriority)
@@ -1078,7 +1082,8 @@ void RenderLoop() {
             const int64_t t = NowNs();
             const int64_t period = 1000000000LL / 60;   // the game's tick (the FieldPacer's hz is the clock's; 60 by default)
             double fraction = 1.0;
-            if (rt.interpolate && prev >= 0 && rt.slots[prev].have_edge && rt.slots[cur].send && rt.slots[prev].send) {
+            if (rt.interpolate && g_split_pictures.load(std::memory_order_relaxed) == 0 && prev >= 0 && rt.slots[prev].have_edge &&
+                rt.slots[cur].send && rt.slots[prev].send) {
                 fraction = double(t - rt.delay_ns - rt.slots[cur].edge_ns) / double(period);
                 if (fraction < 0.0) fraction = 0.0;
                 if (fraction > 1.0) fraction = 1.0;
@@ -1447,7 +1452,44 @@ bool SameState(const ps2e_draw_state& a, const ps2e_draw_state& b) {
            a.scissor_y1 == b.scissor_y1 && a.no_colour_write == b.no_colour_write;
 }
 
-Draw& OpenDraw(uint32_t bucket, const ps2e_draw_state& state, bool copy_frame = false) {
+// ---- THE TWO-PLAYER MOD'S SPLIT SCREEN (game/include/game/coop.h) -----------------------------------------------------
+// The game draws each half of a split screen as a renderer of its own whose frame is that half (StartFrame's rectangle): every
+// draw recorded while the frame is smaller than the screen is held to that rectangle (its scissor, or the part of its own
+// scissor inside it), so a half's triangles never reach the other half. A frame the size of the screen holds nothing.
+struct ViewScissor {
+    bool on = false;
+    bool second = false;   // the second half (bottom, right): its draws' interpolation tags kept apart from the first's
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // inclusive frame pixels (ps2e_draw_state's scissor)
+};
+ViewScissor g_view_scissor;
+
+ps2e_draw_state Viewed(const ps2e_draw_state& in) {
+    if (!g_view_scissor.on) return in;
+    ps2e_draw_state s = in;
+    const ViewScissor& v = g_view_scissor;
+    if ((s.scissor_x0 | s.scissor_y0 | s.scissor_x1 | s.scissor_y1) == 0) {
+        s.scissor_x0 = v.x0; s.scissor_y0 = v.y0; s.scissor_x1 = v.x1; s.scissor_y1 = v.y1;
+    } else {
+        s.scissor_x0 = std::max(s.scissor_x0, v.x0); s.scissor_y0 = std::max(s.scissor_y0, v.y0);
+        s.scissor_x1 = std::min(s.scissor_x1, v.x1); s.scissor_y1 = std::min(s.scissor_y1, v.y1);
+        if (s.scissor_x1 < s.scissor_x0) s.scissor_x1 = s.scissor_x0;
+        if (s.scissor_y1 < s.scissor_y0) s.scissor_y1 = s.scissor_y0;
+    }
+    return s;
+}
+
+// A build's alternate state (set by its maker after ReserveDeferred) held to the same half as its state
+ps2e_draw_state AltState(const DeferredBuild& b) {
+    ps2e_draw_state s = b.alt_state;
+    if (b.viewed) {
+        s.scissor_x0 = b.state.scissor_x0; s.scissor_y0 = b.state.scissor_y0;
+        s.scissor_x1 = b.state.scissor_x1; s.scissor_y1 = b.state.scissor_y1;
+    }
+    return s;
+}
+
+Draw& OpenDraw(uint32_t bucket, const ps2e_draw_state& given, bool copy_frame = false) {
+    const ps2e_draw_state state = Viewed(given);   // (before the join: a half's draw never joins the other half's)
     auto& b = g.buckets[bucket < TE_GFX_BUCKET_COUNT ? bucket : TE_GFX_BUCKET_UI];
     g.draws++;
     // a draw asking for a fresh frame copy never joins the previous one (its copy would predate that draw's triangles)
@@ -1488,7 +1530,10 @@ Draw& OpenDraw(uint32_t bucket, const ps2e_draw_state& state, bool copy_frame = 
     return d;
 }
 
-void SetDrawTag(const ps2r::ps2e::InterpTag& tag, const float* world16, const float* screen16) {
+void SetDrawTag(const ps2r::ps2e::InterpTag& given, const float* world16, const float* screen16) {
+    ps2r::ps2e::InterpTag tag = given;
+    // the split screen's second half: the same object drawn in both halves is two objects to the interpolator
+    if (g_view_scissor.on && g_view_scissor.second && tag.id != 0) tag.id ^= 0x8000000000000000ull;
     g.tag = tag;
     g.tag_untagged = tag.id == 0 && tag.part == 0 && tag.kind == ps2r::ps2e::InterpKind::Newest;
     g.tag_has_transform = world16 && screen16;
@@ -1945,7 +1990,7 @@ DeferredBuild& ReserveDeferred(uint32_t bucket, const ps2e_draw_state& state) {
 #if defined(__vita__)
     ForgetExpansion(b, b.used - 1);
 #endif
-    d.state = state;
+    d.state = Viewed(state);
     d.verts.clear();
     d.ext = nullptr;
     d.ext_count = 0;
@@ -1959,7 +2004,8 @@ DeferredBuild& ReserveDeferred(uint32_t bucket, const ps2e_draw_state& state) {
     if (g.tag_has_transform) d.transform = g.tag_transform;
     if (g.deferred_used == g.deferred.size()) g.deferred.push_back(std::make_unique<DeferredBuild>());
     DeferredBuild& build = *g.deferred[g.deferred_used++];
-    build.state = state;
+    build.state = d.state;   // (the split screen's half: Viewed)
+    build.viewed = g_view_scissor.on;
     build.particles = false;
     build.verts.clear();
     build.segments.clear();
@@ -2618,7 +2664,7 @@ void ExpandBucket(Gfx::Bucket* buckets, int b) {
                 idx.push_back(r);
                 continue;
             }
-            const ps2e_draw_state& state = k < build.alternate.size() && build.alternate[k] ? build.alt_state : build.state;
+            const ps2e_draw_state state = k < build.alternate.size() && build.alternate[k] ? AltState(build) : build.state;
             const ps2e_draw_vertex* const first = build.verts.data() + vat;
             vat += count;
             if (!idx.empty() && JoinsDraw(&at(idx.back()), state, false, d.tag, interp)) {
@@ -2732,7 +2778,7 @@ void ExpandBucket(Gfx::Bucket* buckets, int b) {
                     o.has_transform = false;
                     continue;
                 }
-                const ps2e_draw_state& state = k < build.alternate.size() && build.alternate[k] ? build.alt_state : build.state;
+                const ps2e_draw_state state = k < build.alternate.size() && build.alternate[k] ? AltState(build) : build.state;
                 const auto first = build.verts.begin() + std::ptrdiff_t(at), end = first + std::ptrdiff_t(count);
                 at += count;
                 if (Joins(out, state, false, d.tag, interp)) {
@@ -5696,7 +5742,7 @@ ps2e_draw_mesh_params& RecordMeshInPlace(uint32_t bucket, const ps2e_draw_state&
     d.verts.clear();
     d.ext_count = 0;
     d.tag = g.tag;
-    d.state = state;
+    d.state = Viewed(state);
     return d.own_params;
 }
 #if defined(__vita__)
@@ -6020,7 +6066,7 @@ void RecordSkinMesh(uint32_t bucket, const ps2e_draw_state& state, uint32_t mesh
 #if defined(__vita__)
     ForgetExpansion(b, b.used - 1);
 #endif
-    d.state = state;
+    d.state = Viewed(state);
     d.verts.clear();
     d.ext = nullptr;
     d.ext_count = 0;
@@ -6335,6 +6381,11 @@ void ps2e_graphics_finish_scene(ps2e_s32 effects) {
 void ps2e_gfx2_frame_reset(ps2e_s32 movie) {
     (void)movie;
     ClearBuckets();
+    g_view_scissor.on = false;   // (a split screen's half frame starts over with the next frame's StartFrame)
+    {
+        const int left = g_split_pictures.load(std::memory_order_relaxed);
+        if (left > 0) g_split_pictures.store(left - 1, std::memory_order_relaxed);
+    }
 }
 
 // StartFrame: the frame's clear as the first draw of bucket 0 -- the strips of the frame's rectangle in the clear colour
@@ -6345,6 +6396,21 @@ void ps2e_graphics_start_frame(ps2e_u32 frame) {
     g.frame = *f;
     g.have_frame = true;
     g.start_frames++;
+    {
+        // the two-player mod's split screen (Viewed above): a frame smaller than the screen holds the draws to it
+        const int sw = ScreenW(), sh = ScreenH();
+        const int fx = f->x - int(GsOriginX()), fy = f->y - int(GsOriginY());
+        // (a half: the full width and half the height, or the full height and half the width -- no other frame of the game's)
+        const bool halfHigh = f->width >= sw && std::abs(f->height * 2 - sh) <= 2;
+        const bool halfWide = f->height >= sh && std::abs(f->width * 2 - sw) <= 2;
+        g_view_scissor.on = f->width > 0 && f->height > 0 && (halfHigh || halfWide);
+        g_view_scissor.second = fx > 0 || fy > 0;
+        if (g_view_scissor.on) g_split_pictures.store(3, std::memory_order_relaxed);
+        g_view_scissor.x0 = std::max(fx, 0);
+        g_view_scissor.y0 = std::max(fy, 0);
+        g_view_scissor.x1 = std::min(fx + f->width, sw) - 1;
+        g_view_scissor.y1 = std::min(fy + f->height, sh) - 1;
+    }
     EnsureDevice();
     if (!f->clearColor && !f->clearDepth) return;
     g.clears++;

@@ -9,16 +9,30 @@ this repository — you need your own disc image, which is read at run time.
 
 ## Two players (naser949's mod)
 
-This fork adds a second player on a second controller (step 1: local, shared camera; split screen comes next).
+This fork adds a second player on a second controller, on a split screen (local; online play comes later).
 
 - Connect two controllers. The first one plays player 1, the second one is player 2.
 - While you play, press **START** on the second controller: a second copy of your character appears beside you.
-- Player 2 dying never restarts the checkpoint and costs no life: player 2 comes back beside player 1 after a moment.
-- If player 2 falls far behind (or falls below), it is brought back beside player 1.
+- The lives and the wumpa fruit are shared: the game's own counts, whoever picks a fruit up or dies.
+- A player who dies is out once its death has played: the screen is whole again and shows the other player's game until a
+  checkpoint is reached, then it comes back beside the other (while there are lives left). When both are dead the game
+  restarts its checkpoint as usual. A cutscene does not bring a player who is out back.
+- For a while after play starts, a line at the bottom says how the second controller joins.
+- Player 2 goes wherever it likes: the level loads around both players.
+- Player 2 picks up wumpa fruit (its own count, shown at the top left of its half with the wumpa icon and a small `P2`), bounces off creatures,
+  and the scripts that act on "the player" act on player 2 when player 2 set them off.
 - During cutscenes, vehicles and loads player 2 is taken away, and comes back when play goes on.
 - Hold **SELECT** on the second controller for a second to leave.
+- While player 2 plays, the screen is split: player 1 on the top half, player 2 on the bottom half, each with their own camera
+  (the right stick turns your own).
+- **Options > Two players** has the mod's settings: *camera* (close / normal / far / very far: how much each half sees
+  around its character; farther draws more), *split screen* (top and bottom / left and right) and *camera tilt* (how far
+  down a top or bottom half's camera looks). They last until the game is closed.
+- Known for now: decals show in player 1's half only; frame interpolation (above 60 fps) pauses
+  while the screen is split.
 
-The code: `game/src/game/coop.cpp` (the game side), `platform/nativeee/host/te_input.cpp` (the second controller feeds pad 1).
+The code: `game/src/game/coop.cpp` (the game side), `platform/nativeee/host/te_input.cpp` (the second controller feeds pad 1),
+`platform/nativeee/host/graphics.cpp` (each half's draws held to its half).
 
 ## What's new
 

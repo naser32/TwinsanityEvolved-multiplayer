@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/sound.h"
 
 #include "game/chunkdata.h"
@@ -676,6 +677,7 @@ s32 PlaySoundAtPosition(f32 volume, f32 pitch, GameSound* sound, u32 group, Chun
 
     Vector4 local;
     VuTransformPoint(&view, position, &local);
+    CoopNearerListener(position, &local);   // TwinsanityEvolved: heard from the nearer player's camera (game/coop.h)
     s32 number = PlaySoundAt(volume, pitch, voice, sound, SoundGroupOf(static_cast<s32>(group)), &local, last);
     if (number == -1)
     {
@@ -1173,6 +1175,7 @@ void UpdateInstanceSounds()
                     Vector4 at = *RowOf(&place->matrix, PositionRow);
                     Vector4 local;
                     VuTransformPoint(&toListener, &at, &local);
+                    CoopNearerListener(&at, &local);   // TwinsanityEvolved (game/coop.h)
                     if (UpdateVoiceAt(voice, sound, &local) == 0)
                     {
                         if (item->bits.repeats == 0)

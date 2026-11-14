@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/scenery.h"
 #include "game/volumes.h"
 
@@ -1507,12 +1508,14 @@ void DrawChunk(ChunkData* chunk, ChunkView* view, const ObjectPlace* place, s32 
     bool hasRoot = chunk->scenery != nullptr;
     chunk->flags.hasRoot = hasRoot;
     u32 frame = g_RenderedFrames;
-    if (!hasRoot || chunk->flags.drawStamp == static_cast<u16>(frame))
+    // TwinsanityEvolved: a split screen draws a chunk once a frame for each player's half (game/coop.h; no mark otherwise)
+    u32 stamp = frame ^ CoopDrawStampMark();
+    if (!hasRoot || chunk->flags.drawStamp == static_cast<u16>(stamp))
     {
         return;
     }
 
-    chunk->flags.drawStamp = frame;
+    chunk->flags.drawStamp = stamp;
     auto* matrices = &chunk->matrix;
     if (portal == nullptr)
     {

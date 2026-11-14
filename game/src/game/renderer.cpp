@@ -4,6 +4,7 @@
 #include "game/chunkdata.h"
 #include "game/colour.h"
 #include "game/controllers.h"
+#include "game/coop.h"
 #include "game/font.h"
 #include "game/instances.h"
 #include "game/lights.h"
@@ -460,7 +461,10 @@ void RenderTargetDescription::Destroy(u32 flags)
 
 extern "C" void SetRendererView(Renderer* renderer, RenderView* view)
 {
+    // TwinsanityEvolved: a split screen's half has its own shape (game/coop.h; 1 otherwise)
+    CoopTiltCamera(renderer->target, view);
     view->Update(TvAspect());
+    CoopFixProjection(renderer->target, view);
     renderer->view = view;
 }
 
@@ -558,6 +562,12 @@ extern "C" void DrawRendererScene(Renderer* renderer)
         return;
     }
 
+    // TwinsanityEvolved: the two-player mod's second renderer draws only while the screen is split (game/coop.h)
+    if (renderer->flags.draws == 0)
+    {
+        return;
+    }
+
     RenderView* view = renderer->view;
     if (view != nullptr)
     {
@@ -566,6 +576,8 @@ extern "C" void DrawRendererScene(Renderer* renderer)
         ChunkData* chunk = camera != nullptr ? camera->chunk : nullptr;
         if (chunk != nullptr)
         {
+            // TwinsanityEvolved: a split screen's half: its frame set up first (game/coop.h)
+            CoopBeginScene(renderer);
             ObjectPlace* place = camera->place;
             RotateAndTranslate(place);
             auto* lens = static_cast<CameraLensNode*>(GetGameNode(&camera->nodes, NodeCameraLens));
@@ -576,8 +588,8 @@ extern "C" void DrawRendererScene(Renderer* renderer)
             Matrix4x4 identity;
             InitIdentityMatrix(&identity);
             ClearLightingUnused();
-            s32 fov = lens->fov;
-            f32 aspect = TvAspect();
+            s32 fov = CoopViewFov(renderer->target, lens->fov);
+            f32 aspect = TvAspect() * CoopViewShape(renderer->target);
             Platform::Graphics::SetViewFrustum(lens->nearPlane, lens->farPlane, aspect, &fov);
             renderer->view->MakeMatrices(renderer->target);
             chunk->drawMatrix = identity;
@@ -592,11 +604,13 @@ extern "C" void DrawRendererScene(Renderer* renderer)
 
             DrawScene(chunk, place, renderer->view);
             DrawShadows(chunk, toCamera, &identity);
+            CoopEndScene();
             DrawOverlay(renderer);
             return;
         }
     }
 
     SetUpFrame(renderer->target, renderer->flags.clearsColour, renderer->flags.clearsDepth);
+    CoopEndScene();
     DrawOverlay(renderer);
 }
