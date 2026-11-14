@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/agents.h"
 
 #include "game/animation.h"
@@ -1027,6 +1028,8 @@ void CharacterAgent::HullHits()
 void CharacterAgent::Frame(TimeClock* clock)
 {
     constexpr f32 TopSpeed = 60.0f;
+    // TwinsanityEvolved: the two-player mod's second player is "the player" while its character steps (game/coop.h)
+    CoopPlayerScope coop(instance, nullptr);
 
     // The frame after its state was applied it's lifted onto the ground under it
     if (state.previousMode == ModeApplied && properties->GetInt(CharacterKindProperty) != CharacterNone && body != nullptr)

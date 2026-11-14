@@ -485,6 +485,12 @@ void PickUpWumpaCommand::ExecuteOn(GameNode* node)
         }
     }
 
+    // TwinsanityEvolved: the two-player mod's second player keeps its own count (game/coop.h)
+    if (CoopTakesWumpa(node->owner, static_cast<u32>(wumpaFruit)))
+    {
+        return;
+    }
+
     oleg->wumpaToAdd = static_cast<u8>(oleg->wumpaToAdd + wumpaFruit);
 }
 

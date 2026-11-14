@@ -226,7 +226,11 @@ void GameContext::GameEndFrame(bool playingMovie)
         CoopSetViews();
     }
 
-    renderers->DrawRendererScenes();
+    if (playingMovie || !CoopDrawScenes())
+    {
+        renderers->DrawRendererScenes();
+    }
+
     if (playingMovie)
     {
         gameController->Draw(playingMovie);

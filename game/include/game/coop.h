@@ -25,9 +25,9 @@ bool CoopMakingSecondPlayer();
 
 // ---- The split screen: each player's half of the screen, seen through that player's own follow camera ----------------------
 // While the second player is in play the screen is split in two (top and bottom; a tap of SELECT on the second controller
-// turns it into left and right and back). The game's first renderer draws the second player's half and a second renderer the
-// first player's half, last, so the chunks' camera matrices the frame leaves (the controls' and the particles') are the first
-// player's, as in a game played alone. The platform holds each half's draws to its half (StartFrame's frame smaller than the
+// turns it into left and right and back). The game's renderer keeps the first player's view and draws its half, last; a second
+// renderer draws the second player's half first, so the chunks' camera matrices the frame leaves (the controls' and the
+// particles') are the first player's, as in a game played alone. The platform holds each half's draws to its half (StartFrame's frame smaller than the
 // screen). The HUD and the menus are drawn over the whole screen.
 
 struct Renderer;
@@ -36,8 +36,11 @@ struct Matrix4x4;
 
 // Whether the screen is split now
 bool CoopSplit();
-// After the game controller set its view (GameContext::GameEndFrame): each renderer given its player's view
+// After the game controller set its view (GameContext::GameEndFrame): the second renderer given the second player's view
 void CoopSetViews();
+// The split screen's scenes drawn (the second player's half, then the first player's): false when the screen isn't split (the
+// renderers draw theirs)
+bool CoopDrawScenes();
 // A renderer's scene starts (DrawRendererScene: its half's frame set up) and ends (the whole screen's again, for the overlay)
 void CoopBeginScene(Renderer* renderer);
 void CoopEndScene();
@@ -51,3 +54,30 @@ void CoopBeforeHud();
 // The camera the second player's stick is turned by (its own follow camera's matrix while the screen is split; else none: the
 // chunk's, the first player's camera)
 const Matrix4x4* CoopCameraMatrix(InstanceContext* instance);
+
+// ---- The second player as "the player" -------------------------------------------------------------------------------------
+// While the second player's character steps (its agent's frame, its own scripts) or a script started by it runs (a creature
+// it landed on, a crate it broke), the game's player (g_PlayerInstance: the scripts' "player", IsPlayer) is the second player:
+// the creature bounces it, the pickups fly to it. Nothing changes when the instance and originator aren't the second player's.
+struct Reference;
+struct ReferencedObject;
+class CoopPlayerScope
+{
+public:
+    CoopPlayerScope(const void* instance, const void* originator);
+    ~CoopPlayerScope();
+    CoopPlayerScope(const CoopPlayerScope&) = delete;
+    CoopPlayerScope& operator=(const CoopPlayerScope&) = delete;
+
+private:
+    Reference* saved;
+    bool swapped;
+};
+
+// Wumpa fruit picked up at an instance (a pickup, a crate): the second player's when it is the nearer player (true: counted on
+// its own count, shown in its half), else the game's
+bool CoopTakesWumpa(InstanceContext* from, u32 count);
+// The chunks load around the second player's character too (none: only around the first's)
+ReferencedObject* CoopLoadingFocus();
+// The second player's count queued over its half (before the HUD is drawn)
+void CoopQueueHud();

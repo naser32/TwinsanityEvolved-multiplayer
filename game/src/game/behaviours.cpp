@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/behaviours.h"
 
 #include "game/attachments.h"
@@ -573,6 +574,9 @@ u32 BehaviourRunner::Update(TimeClock* clock)
         return 0;
     }
 
+    // TwinsanityEvolved: the two-player mod's second player is "the player" to its own scripts and to the scripts it started
+    // (a creature it landed on bounces it: game/coop.h)
+    CoopPlayerScope coop(agentNode != nullptr ? agentNode->owner : nullptr, originator);
     auto* node = static_cast<ObjectNode*>(agentNode);
     if (CheckInterrupts(clock) == 0)
     {

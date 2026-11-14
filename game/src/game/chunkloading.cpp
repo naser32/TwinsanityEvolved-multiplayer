@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/chunkloading.h"
 
 #include "game/array.h"
@@ -36,6 +37,8 @@ constexpr s32 LoaderNext = GCC2_MEMBER_POINTER(ChunkLoader, next);
 constexpr f32 LoadDelay = 1.0f;
 constexpr f32 UnloadDelay = 4.0f;
 constexpr f32 UnreachedUnloadDelay = Rounded(0.1);
+// TwinsanityEvolved: the focus the links are followed from while the second player's chunks are loaded (none: the manager's)
+ReferencedObject* g_LinkFocus = nullptr;
 // The frames drawn empty before everything's unloaded
 constexpr s32 EmptyFrames = 2;
 // The shadows a chunk's made with (its constructor ignores it: its lists hold 100)
@@ -436,6 +439,18 @@ extern "C"
                 LoadLinkedChunks(manager->focusLoader, manager->frame, 0, 0);
             }
 
+            // TwinsanityEvolved: the two-player mod's second player has the chunks around it loaded too (game/coop.h)
+            if (ReferencedObject* second = CoopLoadingFocus())
+            {
+                ChunkLoader* secondLoader = FindChunkLoaderOf(manager, second);
+                if (secondLoader != nullptr && secondLoader != manager->focusLoader)
+                {
+                    g_LinkFocus = second;
+                    LoadLinkedChunks(secondLoader, manager->frame, 0, 0);
+                    g_LinkFocus = nullptr;
+                }
+            }
+
             while (loader != nullptr)
             {
                 ChunkLoader* next = loader->next;
@@ -630,7 +645,10 @@ extern "C"
             bool follow = true;
             if (loader->bits.takesNoObjects == 0 && link->hulls != nullptr)
             {
-                ReferencedObject* focus = loader->manager->focus != nullptr ? loader->manager->focus->object : nullptr;
+                // TwinsanityEvolved: the second player's links followed from where it stands (game/coop.h)
+                ReferencedObject* focus = g_LinkFocus != nullptr                 ? g_LinkFocus
+                                          : loader->manager->focus != nullptr ? loader->manager->focus->object
+                                                                              : nullptr;
                 if (focus == nullptr)
                 {
                     follow = link->type.loadsWithoutPlayer != 0;

@@ -885,6 +885,10 @@ void SlowPictureLine(uint64_t present, double gpu_wait_ms, double work_ms, doubl
                  (unsigned long long)present, ms, gpu_wait_ms, work_ms, present_ms, sections.empty() ? "" : " prof: ", sections.c_str());
 }
 
+// (the two-player mod's split screen: ViewScissor below)
+// Pictures left to show uninterpolated: a split picture holds two cameras, the interpolator re-projects with one (set by a
+// half's StartFrame, counted down a picture at a time)
+std::atomic<int> g_split_pictures{0};
 void RenderLoop() {
     auto& rt = g.rt;
     // with the game thread: interactive work (the engine's per-platform arm: macOS QoS, Windows SetThreadPriority)
@@ -1078,7 +1082,8 @@ void RenderLoop() {
             const int64_t t = NowNs();
             const int64_t period = 1000000000LL / 60;   // the game's tick (the FieldPacer's hz is the clock's; 60 by default)
             double fraction = 1.0;
-            if (rt.interpolate && prev >= 0 && rt.slots[prev].have_edge && rt.slots[cur].send && rt.slots[prev].send) {
+            if (rt.interpolate && g_split_pictures.load(std::memory_order_relaxed) == 0 && prev >= 0 && rt.slots[prev].have_edge &&
+                rt.slots[cur].send && rt.slots[prev].send) {
                 fraction = double(t - rt.delay_ns - rt.slots[cur].edge_ns) / double(period);
                 if (fraction < 0.0) fraction = 0.0;
                 if (fraction > 1.0) fraction = 1.0;
@@ -1453,6 +1458,7 @@ bool SameState(const ps2e_draw_state& a, const ps2e_draw_state& b) {
 // scissor inside it), so a half's triangles never reach the other half. A frame the size of the screen holds nothing.
 struct ViewScissor {
     bool on = false;
+    bool second = false;   // the second half (bottom, right): its draws' interpolation tags kept apart from the first's
     int x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // inclusive frame pixels (ps2e_draw_state's scissor)
 };
 ViewScissor g_view_scissor;
@@ -1524,7 +1530,10 @@ Draw& OpenDraw(uint32_t bucket, const ps2e_draw_state& given, bool copy_frame = 
     return d;
 }
 
-void SetDrawTag(const ps2r::ps2e::InterpTag& tag, const float* world16, const float* screen16) {
+void SetDrawTag(const ps2r::ps2e::InterpTag& given, const float* world16, const float* screen16) {
+    ps2r::ps2e::InterpTag tag = given;
+    // the split screen's second half: the same object drawn in both halves is two objects to the interpolator
+    if (g_view_scissor.on && g_view_scissor.second && tag.id != 0) tag.id ^= 0x8000000000000000ull;
     g.tag = tag;
     g.tag_untagged = tag.id == 0 && tag.part == 0 && tag.kind == ps2r::ps2e::InterpKind::Newest;
     g.tag_has_transform = world16 && screen16;
@@ -6373,6 +6382,10 @@ void ps2e_gfx2_frame_reset(ps2e_s32 movie) {
     (void)movie;
     ClearBuckets();
     g_view_scissor.on = false;   // (a split screen's half frame starts over with the next frame's StartFrame)
+    {
+        const int left = g_split_pictures.load(std::memory_order_relaxed);
+        if (left > 0) g_split_pictures.store(left - 1, std::memory_order_relaxed);
+    }
 }
 
 // StartFrame: the frame's clear as the first draw of bucket 0 -- the strips of the frame's rectangle in the clear colour
@@ -6391,6 +6404,8 @@ void ps2e_graphics_start_frame(ps2e_u32 frame) {
         const bool halfHigh = f->width >= sw && std::abs(f->height * 2 - sh) <= 2;
         const bool halfWide = f->height >= sh && std::abs(f->width * 2 - sw) <= 2;
         g_view_scissor.on = f->width > 0 && f->height > 0 && (halfHigh || halfWide);
+        g_view_scissor.second = fx > 0 || fy > 0;
+        if (g_view_scissor.on) g_split_pictures.store(3, std::memory_order_relaxed);
         g_view_scissor.x0 = std::max(fx, 0);
         g_view_scissor.y0 = std::max(fy, 0);
         g_view_scissor.x1 = std::min(fx + f->width, sw) - 1;

@@ -3,6 +3,11 @@
 #include "game/agents.h"
 #include "game/chunkloading.h"
 #include "game/controllers.h"
+#include "game/colour.h"
+#include "game/cutscenereader.h"
+#include "game/font.h"
+#include "game/objects.h"
+#include "game/overlay.h"
 #include "game/clock.h"
 #include "game/renderer.h"
 #include "game/view.h"
@@ -37,14 +42,14 @@ constexpr u32 SecondPadIndex = 1;
 // Frames of play before the second player is made (a level's start settles first), and after its death
 constexpr u32 SettleFrames = 30;
 constexpr u32 DeathFrames = 90;
+// The wumpa fruit the second player gathered (the first player's are the game's own count) and its extra lives' worth
+u32 g_SecondWumpa = 0;
+constexpr u32 WumpaPerLife = 100;
 // Frames SELECT is held to leave
 constexpr u32 LeaveFrames = 60;
 // Where the second player is made: beside the first and a little above it (it drops to the ground)
 constexpr f32 SpawnSide = 0.8f;
 constexpr f32 SpawnAbove = 1.0f;
-// The second player is brought back beside the first past this distance, or this far below it
-constexpr f32 TetherDistance = 20.0f;
-constexpr f32 TetherBelow = 12.0f;
 
 // The second player's character (a reference: the game lets it go with its chunk)
 Reference* g_Second = nullptr;
@@ -92,7 +97,7 @@ Vector4 BesideFirst(InstanceContext* first)
 }
 
 // Warped as the tests warp the played character (game/src/game/testrequests.cpp Warp: PositionWarp's WarpTo)
-void Warp(InstanceContext* instance, const Vector4& position)
+[[maybe_unused]] void Warp(InstanceContext* instance, const Vector4& position)
 {
     ObjectPlace* place = instance->place;
     place->SyncPosition();
@@ -165,6 +170,10 @@ InstanceContext* Make(InstanceContext* first)
         controls->pad = SecondPad();
     }
 
+    // The character's model stays the first player's to the cutscenes (CharacterAgent::SetUp gave it to the copy)
+    u16 model;
+    GetObjectModelId(&model, character->object, 0);
+    SetVideoModelInstance(G_VideoController, model & ResourceIndexMask, first);
     // (its follow node keeps following it: FollowNode::Update lets the second player's camera step, the split screen's view)
     AssignReference(&g_Second, made);
     return made;
@@ -199,6 +208,7 @@ Renderer* g_SecondRenderer = nullptr;
 RenderView* g_SecondView = nullptr;
 u32 g_StampMark = 0;
 constexpr u32 SecondPassMark = 0x8000;
+constexpr f32 HudTextScale = 0.75f;
 
 InstanceContext* SecondCamera()
 {
@@ -306,9 +316,9 @@ void StepSplit(GameController* controller)
     {
         g_Split = true;
         g_SplitSideBySide = g_SideBySide;
-        // The first renderer (drawn first) the second player's half, the second renderer the first player's
-        TakeHalf(first->target, true, g_SideBySide);
-        TakeHalf(g_SecondRenderer->target, false, g_SideBySide);
+        // The game's renderer the first player's half (top, left), the second renderer the second player's
+        TakeHalf(first->target, false, g_SideBySide);
+        TakeHalf(g_SecondRenderer->target, true, g_SideBySide);
     }
 
     g_SecondRenderer->flags.draws = 1;
@@ -406,22 +416,11 @@ void StepPlayers(GameController* controller)
         return;
     }
 
-    // Too far behind, or fallen below: brought back beside the first (made again when it's in another chunk)
-    Vector4 a = PositionOf(first);
-    Vector4 b = PositionOf(second);
-    f32 dx = b.x - a.x;
-    f32 dy = b.y - a.y;
-    f32 dz = b.z - a.z;
-    if (dx * dx + dy * dy + dz * dz > TetherDistance * TetherDistance || dy < -TetherBelow)
+    // It roams where it likes: the chunks load around it too (CoopLoadingFocus); only when its chunk is gone (unloaded under it)
+    // is it made again beside the first
+    if (second->chunk == nullptr)
     {
-        if (second->chunk == first->chunk)
-        {
-            Warp(second, BesideFirst(first));
-        }
-        else
-        {
-            TakeAway();
-        }
+        TakeAway();
     }
 }
 
@@ -459,9 +458,21 @@ void CoopSetViews()
         return;
     }
 
-    GameController* controller = G_GameController;
-    SetRendererView(g_SecondRenderer, &controller->view);
-    SetRendererView(controller->renderer, g_SecondView);
+    SetRendererView(g_SecondRenderer, g_SecondView);
+}
+
+bool CoopDrawScenes()
+{
+    if (!g_Split)
+    {
+        return false;
+    }
+
+    // The second player's half first, the first player's last: the chunks' camera matrices the frame leaves (the controls',
+    // the particles') are the first player's, and the game's renderer keeps the first player's view as in a game played alone
+    DrawRendererScene(g_SecondRenderer);
+    DrawRendererScene(G_GameController->renderer);
+    return true;
 }
 
 void CoopBeginScene(Renderer* renderer)
@@ -471,7 +482,7 @@ void CoopBeginScene(Renderer* renderer)
         return;
     }
 
-    g_StampMark = renderer == g_SecondRenderer ? 0 : SecondPassMark;
+    g_StampMark = renderer == g_SecondRenderer ? SecondPassMark : 0;
     SetUpFrame(renderer->target, 0, 0);
 }
 
@@ -511,9 +522,10 @@ void CoopAfterScenes()
         return;
     }
 
-    g_RenderView = &G_GameController->view;
-    g_RenderTarget = g_SecondRenderer->target;
-    SetUpFrame(g_SecondRenderer->target, 0, 0);
+    GameController* controller = G_GameController;
+    g_RenderView = &controller->view;
+    g_RenderTarget = controller->renderer->target;
+    SetUpFrame(controller->renderer->target, 0, 0);
 }
 
 void CoopBeforeHud()
@@ -525,6 +537,7 @@ void CoopBeforeHud()
 
     SetUpFrame(g_Whole, 0, 0);
     g_RenderTarget = g_Whole;
+    CoopQueueHud();
 }
 
 const Matrix4x4* CoopCameraMatrix(InstanceContext* instance)
@@ -543,4 +556,110 @@ const Matrix4x4* CoopCameraMatrix(InstanceContext* instance)
     ObjectPlace* place = camera->place;
     RotateAndTranslate(place);
     return &place->matrix;
+}
+
+CoopPlayerScope::CoopPlayerScope(const void* instance, const void* originator) : saved(nullptr), swapped(false)
+{
+    InstanceContext* second = Second();
+    if (second == nullptr || g_PlayerInstance == g_Second || (instance != second && originator != second))
+    {
+        return;
+    }
+
+    saved = g_PlayerInstance;
+    g_PlayerInstance = g_Second;
+    swapped = true;
+}
+
+CoopPlayerScope::~CoopPlayerScope()
+{
+    // (a character switch inside keeps what it set)
+    if (swapped && g_PlayerInstance == g_Second)
+    {
+        g_PlayerInstance = saved;
+    }
+}
+
+bool CoopTakesWumpa(InstanceContext* from, u32 count)
+{
+    InstanceContext* second = Second();
+    GameController* controller = G_GameController;
+    InstanceContext* first = controller->progress.Instance(controller->progress.play.character);
+    if (second == nullptr || from == nullptr || from->place == nullptr)
+    {
+        return false;
+    }
+
+    // The nearer player's: the one the fruit flew to, or that broke the crate
+    Vector4 at = PositionOf(from);
+    Vector4 b = PositionOf(second);
+    f32 dx = b.x - at.x, dy = b.y - at.y, dz = b.z - at.z;
+    f32 toSecond = dx * dx + dy * dy + dz * dz;
+    if (first != nullptr && first->place != nullptr)
+    {
+        Vector4 a = PositionOf(first);
+        dx = a.x - at.x;
+        dy = a.y - at.y;
+        dz = a.z - at.z;
+        if (dx * dx + dy * dy + dz * dz <= toSecond)
+        {
+            return false;
+        }
+    }
+
+    g_SecondWumpa += count;
+    while (g_SecondWumpa >= WumpaPerLife)
+    {
+        g_SecondWumpa -= WumpaPerLife;
+    }
+
+    return true;
+}
+
+ReferencedObject* CoopLoadingFocus()
+{
+    InstanceContext* second = Second();
+    return second != nullptr && second->chunk != nullptr ? second : nullptr;
+}
+
+void CoopQueueHud()
+{
+    if (!g_Split)
+    {
+        return;
+    }
+
+    // The second player's wumpa fruit at its half's top right
+    GameController* controller = G_GameController;
+    Renderer* renderer = controller->renderer;
+    char text[16];
+    u32 n = g_SecondWumpa;
+    char digits[12];
+    s32 count = 0;
+    do
+    {
+        digits[count++] = static_cast<char>('0' + n % 10);
+        n /= 10;
+    } while (n != 0 && count < 11);
+
+    s32 at = 0;
+    text[at++] = 'P';
+    text[at++] = '2';
+    text[at++] = ' ';
+    while (count > 0)
+    {
+        text[at++] = digits[--count];
+    }
+
+    text[at] = 0;
+    renderer->font = &controller->font;
+    u32 colour;
+    GetColor(&colour, ColourWhite);
+    renderer->colour = colour;
+    renderer->textScale.x = HudTextScale;
+    renderer->textScale.y = HudTextScale;
+    renderer->textAlignment.value = TextAlignment::MiddleRight;
+    f32 x = g_SplitSideBySide ? 0.95f : 0.95f;
+    f32 y = g_SplitSideBySide ? 0.08f : 0.56f;
+    QueueText(renderer, text, x, y);
 }
