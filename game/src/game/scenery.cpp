@@ -204,7 +204,7 @@ u32 DrawCellInstancesCulled(InstanceContext** list, ChunkView* view)
         }
         else
         {
-            instance->flags.inDrawnCell = inView;
+            instance->flags.inDrawnCell = CoopInDrawnCell(instance, inView);   // TwinsanityEvolved (game/coop.h)
             SetSeen(instance, static_cast<u32>(distance));
             ReferencedObjectFlags flags = instance->flags;
             if (flags.visible && !flags.asleep && inView)

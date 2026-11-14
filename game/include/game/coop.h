@@ -91,3 +91,9 @@ u32 CoopSeen(InstanceContext* instance, u32 distance);
 // Before a skin's joints are multiplied in place for its draw (DrawOgi): a copy for the first of the two halves' draws
 struct GameOGI;
 void CoopSkinMatrices(const GameOGI* ogi, Matrix4x4** matrices);
+// Whether an instance out of the first player's view stays in a drawn cell: it does when the second player's half saw it
+u32 CoopInDrawnCell(InstanceContext* instance, u32 inView);
+// A sound's place in the listener's space: the second player's camera's instead when the sound is nearer to it (at: the
+// sound's place in the world)
+struct Vector4;
+void CoopNearerListener(const Vector4* at, Vector4* local);

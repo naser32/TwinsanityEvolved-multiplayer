@@ -915,3 +915,41 @@ void CoopQueueHud()
     renderer->textAlignment.value = TextAlignment::Centred;
     QueueText(renderer, "P2", iconX, iconY + 0.075f);
 }
+
+u32 CoopInDrawnCell(InstanceContext* instance, u32 inView)
+{
+    // The first player's half (drawn second): an instance the second player's half had in view stays in a drawn cell (its
+    // model is made and animated next frame), whatever the first player's view says
+    if (!g_Split || g_StampMark != 0 || inView != 0)
+    {
+        return inView;
+    }
+
+    return SeenSlot(instance, false) != nullptr && instance->flags.inDrawnCell != 0 ? 1 : 0;
+}
+
+void CoopNearerListener(const Vector4* at, Vector4* local)
+{
+    if (!g_Split)
+    {
+        return;
+    }
+
+    InstanceContext* camera = SecondCamera();
+    if (camera == nullptr || camera->place == nullptr)
+    {
+        return;
+    }
+
+    // The point in the second player's camera's space (the chunks taken as one space): heard from the nearer of the two
+    ObjectPlace* place = camera->place;
+    RotateAndTranslate(place);
+    Matrix4x4 view = place->matrix;
+    VuInvertRigidInPlace(&view);
+    Vector4 other;
+    VuTransformPoint(&view, at, &other);
+    if (other.x * other.x + other.y * other.y + other.z * other.z < local->x * local->x + local->y * local->y + local->z * local->z)
+    {
+        *local = other;
+    }
+}
