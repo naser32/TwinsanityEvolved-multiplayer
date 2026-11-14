@@ -233,6 +233,7 @@ void GameContext::GameEndFrame(bool playingMovie)
 
     if (playingMovie)
     {
+        CoopUntiltCameras();
         gameController->Draw(playingMovie);
         return;
     }

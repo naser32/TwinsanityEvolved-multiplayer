@@ -428,6 +428,7 @@ void StepPlayers(GameController* controller)
 
 void StepCoop(GameController* controller)
 {
+    CoopUntiltCameras();
     StepPlayers(controller);
     StepSplit(controller);
 }
@@ -538,6 +539,7 @@ f32 CoopViewShape(const RenderTargetDescription* target)
 
 void CoopAfterScenes()
 {
+    CoopUntiltCameras();
     if (!g_Split)
     {
         return;
@@ -1055,4 +1057,89 @@ s32 CoopViewFov(const RenderTargetDescription* target, s32 fov)
     }
 
     return high * 2;
+}
+
+// ---- a top or bottom half's camera looks a little lower -------------------------------------------------------------------
+// The half sees half the height of a full view, around its middle; the played character stands below the middle of the game's
+// view (the half showed its head at the bottom edge). While the half's scene is drawn its camera is tilted down, so the
+// character is in the half's middle; the camera's own matrix is put back after the scenes (nothing else sees the tilt).
+namespace
+{
+// How far below the view's middle the half looks: this share of the full view's half height
+constexpr f32 TiltShare = 0.42f;
+
+struct TiltedCamera
+{
+    ObjectPlace* place;
+    Vector4 up;
+    Vector4 forward;
+};
+TiltedCamera g_Tilted[2] = {};
+
+void Untilt(TiltedCamera* tilted)
+{
+    if (tilted->place != nullptr)
+    {
+        *RowOf(&tilted->place->matrix, 1) = tilted->up;
+        *RowOf(&tilted->place->matrix, 2) = tilted->forward;
+        tilted->place = nullptr;
+    }
+}
+}
+
+void CoopUntiltCameras()
+{
+    Untilt(&g_Tilted[0]);
+    Untilt(&g_Tilted[1]);
+}
+
+void CoopTiltCamera(const RenderTargetDescription* target, RenderView* view)
+{
+    InstanceContext* camera = view->cameraObject != nullptr ? static_cast<InstanceContext*>(view->cameraObject->object) : nullptr;
+    ObjectPlace* place = camera != nullptr ? camera->place : nullptr;
+    if (place == nullptr)
+    {
+        return;
+    }
+
+    // (tilted already this frame: from its own matrix again)
+    for (TiltedCamera& tilted : g_Tilted)
+    {
+        if (tilted.place == place)
+        {
+            Untilt(&tilted);
+        }
+    }
+
+    auto* lens = static_cast<CameraLensNode*>(GetGameNode(&camera->nodes, NodeCameraLens));
+    if (!(1.0f < CoopViewShape(target)) || lens == nullptr)
+    {
+        return;
+    }
+
+    TiltedCamera* slot = g_Tilted[0].place == nullptr ? &g_Tilted[0] : g_Tilted[1].place == nullptr ? &g_Tilted[1] : nullptr;
+    if (slot == nullptr)
+    {
+        return;
+    }
+
+    RotateAndTranslate(place);
+    s32 half = static_cast<s32>(static_cast<f32>(lens->fov) * 0.5f);
+    f32 tangent = TiltShare * TanOfAngle(&half);
+    f32 cosine = 1.0f / __builtin_sqrtf(1.0f + tangent * tangent);
+    f32 sine = tangent * cosine;
+    Vector4* up = RowOf(&place->matrix, 1);
+    Vector4* forward = RowOf(&place->matrix, 2);
+    slot->place = place;
+    slot->up = *up;
+    slot->forward = *forward;
+    Vector4 u = *up;
+    Vector4 f = *forward;
+    // Down: the forward toward what is under it, the up following
+    forward->x = f.x * cosine - u.x * sine;
+    forward->y = f.y * cosine - u.y * sine;
+    forward->z = f.z * cosine - u.z * sine;
+    up->x = u.x * cosine + f.x * sine;
+    up->y = u.y * cosine + f.y * sine;
+    up->z = u.z * cosine + f.z * sine;
 }

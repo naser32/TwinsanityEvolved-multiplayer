@@ -103,3 +103,6 @@ struct RenderView;
 f32 CoopViewAspect(const RenderTargetDescription* target);
 void CoopFixProjection(const RenderTargetDescription* target, RenderView* view);
 s32 CoopViewFov(const RenderTargetDescription* target, s32 fov);
+// A top or bottom half's camera tilted down for its scene (before the view's update), and the cameras put back
+void CoopTiltCamera(const RenderTargetDescription* target, RenderView* view);
+void CoopUntiltCameras();
