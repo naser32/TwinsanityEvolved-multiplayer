@@ -22,6 +22,7 @@
 #include "game/math.h"
 #include "game/objectnode.h"
 #include "game/pads.h"
+#include "game/particles.h"
 #include "game/place.h"
 #include "game/player.h"
 #include "game/progress.h"
@@ -472,6 +473,25 @@ bool CoopDrawScenes()
     // The second player's half first, the first player's last: the chunks' camera matrices the frame leaves (the controls',
     // the particles') are the first player's, and the game's renderer keeps the first player's view as in a game played alone
     DrawRendererScene(g_SecondRenderer);
+    // The particles in the second player's half too (the chunks' camera matrices are its half's now): drawn only, the frame's
+    // update and the first player's draw follow as in a game played alone (UpdateAndDrawParticles)
+    if (g_ParticlesSetUp != 0)
+    {
+        g_RenderView = g_SecondView;
+        g_RenderTarget = g_SecondRenderer->target;
+        SetUpFrame(g_SecondRenderer->target, 0, 0);
+        Platform::Graphics::UseHelperPrograms(Platform::Graphics::CullingPrograms, false);
+        ParticleViews views;
+        views.frame = g_RenderedFrames;
+        views.count = 0;
+        DrawParticleList(0, 0, &views);
+        DrawParticleList(0, DrawListDistortion, &views);
+        for (s32 index = 0; index < views.count; index++)
+        {
+            views.chunks[index]->particleView = -1;
+        }
+    }
+
     DrawRendererScene(G_GameController->renderer);
     return true;
 }
@@ -617,18 +637,28 @@ void PlayFirst()
     g_ScopeSecond = false;
 }
 
-f32 SquaredTo(InstanceContext* from, const Vector4& at)
+f32 SquaredBetween(const Vector4& p, const Vector4& at)
 {
-    Vector4 p = PositionOf(from);
     f32 dx = p.x - at.x, dy = p.y - at.y, dz = p.z - at.z;
     return dx * dx + dy * dy + dz * dz;
 }
+
+struct PlayerPlaces
+{
+    u32 frame;
+    const InstanceContext* first;
+    const InstanceContext* second;
+    bool valid;
+    Vector4 a;
+    Vector4 b;
+};
+PlayerPlaces g_Places = {~0u, nullptr, nullptr, false, {}, {}};
 }
 
 CoopPlayerScope::CoopPlayerScope(const void* instance, const void* originator) : saved(nullptr), swapped(false)
 {
     InstanceContext* second = Second();
-    if (second == nullptr || second->place == nullptr || CharacterOf(second) == nullptr)
+    if (second == nullptr)
     {
         return;
     }
@@ -637,6 +667,25 @@ CoopPlayerScope::CoopPlayerScope(const void* instance, const void* originator) :
     Reference* firstHandle = g_ScopeDepth != 0 ? g_Real.instance : g_PlayerInstance;
     auto* first = firstHandle != nullptr ? static_cast<InstanceContext*>(firstHandle->object) : nullptr;
     if (first == nullptr || first == second)
+    {
+        return;
+    }
+
+    // The two players' places, taken once a frame (thousands of scripts ask)
+    if (g_Places.frame != g_RenderedFrames || g_Places.first != first || g_Places.second != second)
+    {
+        g_Places.frame = g_RenderedFrames;
+        g_Places.first = first;
+        g_Places.second = second;
+        g_Places.valid = second->place != nullptr && first->place != nullptr && CharacterOf(second) != nullptr;
+        if (g_Places.valid)
+        {
+            g_Places.a = PositionOf(first);
+            g_Places.b = PositionOf(second);
+        }
+    }
+
+    if (!g_Places.valid)
     {
         return;
     }
@@ -654,13 +703,13 @@ CoopPlayerScope::CoopPlayerScope(const void* instance, const void* originator) :
     else
     {
         auto* owner = static_cast<InstanceContext*>(const_cast<void*>(instance));
-        if (owner == nullptr || owner->place == nullptr || first->place == nullptr)
+        if (owner == nullptr || owner->place == nullptr)
         {
             return;
         }
 
         Vector4 at = PositionOf(owner);
-        wantsSecond = SquaredTo(second, at) < SquaredTo(first, at);
+        wantsSecond = SquaredBetween(g_Places.b, at) < SquaredBetween(g_Places.a, at);
     }
 
     if (g_ScopeDepth == 0)

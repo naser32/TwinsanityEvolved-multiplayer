@@ -564,6 +564,10 @@ u32 BehaviourRunner::StepPacket(TimeClock* clock)
 
 u32 BehaviourRunner::Update(TimeClock* clock)
 {
+    // TwinsanityEvolved: the two-player mod's second player is "the player" to its own scripts, to the scripts it started and
+    // to those of what is nearer to it (a creature it landed on bounces it: game/coop.h). Before the starter is taken: its
+    // receivers are resolved then (the script's "human player" is who the creature's bounce is started on)
+    CoopPlayerScope coop(agentNode != nullptr ? agentNode->owner : nullptr, nextStarter != nullptr ? nextOriginator : originator);
     if (nextStarter != nullptr)
     {
         TakeStarter();
@@ -574,9 +578,6 @@ u32 BehaviourRunner::Update(TimeClock* clock)
         return 0;
     }
 
-    // TwinsanityEvolved: the two-player mod's second player is "the player" to its own scripts and to the scripts it started
-    // (a creature it landed on bounces it: game/coop.h)
-    CoopPlayerScope coop(agentNode != nullptr ? agentNode->owner : nullptr, originator);
     auto* node = static_cast<ObjectNode*>(agentNode);
     if (CheckInterrupts(clock) == 0)
     {

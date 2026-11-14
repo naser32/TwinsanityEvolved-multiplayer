@@ -21,7 +21,7 @@ This fork adds a second player on a second controller, on a split screen (local;
 - Hold **SELECT** on the second controller for a second to leave.
 - While player 2 plays, the screen is split: player 1 on the top half, player 2 on the bottom half, each with their own camera
   (the right stick turns your own). A tap of **SELECT** on the second controller switches to left / right halves and back.
-- Known for now: particles (sparks, smoke) and decals show in player 1's half only; frame interpolation (above 60 fps) pauses
+- Known for now: decals show in player 1's half only; frame interpolation (above 60 fps) pauses
   while the screen is split.
 
 The code: `game/src/game/coop.cpp` (the game side), `platform/nativeee/host/te_input.cpp` (the second controller feeds pad 1),
