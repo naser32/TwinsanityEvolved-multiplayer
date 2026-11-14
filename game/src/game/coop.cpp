@@ -39,6 +39,7 @@ extern "C"
 }
 
 // (defined with the players' step and the player scope below)
+void CoopForgetScopedSecond();
 InstanceContext* ScopedRealPrimary();
 InstanceContext* Primary(GameController* controller);
 bool MenuState(u32 state);
@@ -170,6 +171,9 @@ Vector4 BesideFirst(InstanceContext* first)
 // The second player's character let go of (released: gone from its chunk)
 void TakeAway()
 {
+    // (a scope may have it in the played character's place right now -- its own script asked for this: the game's player
+    // first, or the game would keep a character that is gone as its player)
+    CoopForgetScopedSecond();
     InstanceContext* second = Second();
     if (second != nullptr)
     {
@@ -693,7 +697,8 @@ bool CoopIsSecondPlayer(InstanceContext* instance)
 
 void CoopSecondPlayerDied()
 {
-    SecondaryDied();
+    // Its own script is running: it is out at the next frame (StepPlayers), not under its script's feet
+    g_DeadFrames = DeathFramesMost;
 }
 
 bool CoopPrimaryDying(const void* agent)
@@ -946,10 +951,14 @@ RealPlayer g_Real;
 u32 g_ScopeDepth = 0;
 bool g_ScopeSecond = false;
 
+// The reference a scope put in the played character's place (the secondary's, as it was then)
+Reference* g_Placed = nullptr;
+
 void PlaySecond()
 {
     GameController* controller = G_GameController;
     CharacterAgent* character = CharacterOf(Second());
+    g_Placed = g_Second;
     g_PlayerInstance = g_Second;
     if (g_Real.character < GameProgress::Characters)
     {
@@ -968,11 +977,11 @@ void PlaySecond()
 void PlayFirst()
 {
     // (a character switch made inside keeps what it set)
-    if (g_PlayerInstance == g_Second)
+    if (g_PlayerInstance == g_Placed)
     {
         GameController* controller = G_GameController;
         g_PlayerInstance = g_Real.instance;
-        if (g_Real.character < GameProgress::Characters && controller->progress.characters[g_Real.character] == g_Second)
+        if (g_Real.character < GameProgress::Characters && controller->progress.characters[g_Real.character] == g_Placed)
         {
             controller->progress.characters[g_Real.character] = g_Real.handle;
         }
@@ -983,6 +992,7 @@ void PlayFirst()
         g_PlayerPart2 = g_Real.part2;
     }
 
+    g_Placed = nullptr;
     g_ScopeSecond = false;
 }
 
@@ -1002,6 +1012,14 @@ struct PlayerPlaces
     Vector4 b;
 };
 PlayerPlaces g_Places = {~0u, nullptr, nullptr, false, {}, {}};
+}
+
+void CoopForgetScopedSecond()
+{
+    if (g_ScopeDepth != 0 && g_ScopeSecond)
+    {
+        PlayFirst();
+    }
 }
 
 InstanceContext* ScopedRealPrimary()
