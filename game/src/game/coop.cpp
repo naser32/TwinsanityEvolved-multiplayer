@@ -74,6 +74,9 @@ bool g_Making = false;
 bool g_Swapped = false;
 bool g_Down[2] = {false, false};
 bool g_PendingSwap = false;
+// Frames the secondary has been dead for, and how many its death may take
+u32 g_DeadFrames = 0;
+constexpr u32 DeathFramesMost = 300;
 bool g_Restarted = false;
 bool g_GameOver = false;
 // Frames the join prompt stays after play starts
@@ -351,9 +354,8 @@ void StepSplit(GameController* controller)
     g_SideBySide = CoopOptionValue(CoopOptionSplit) == 1;
     InstanceContext* camera = SecondCamera();
     u32 state = controller->State();
-    // (a player who is out keeps its half: it watches the other's camera)
-    bool watched = g_Joined && (g_Down[0] || g_Down[1]) && Primary(controller) != nullptr;
-    bool wants = (camera != nullptr || watched) && (state == GameController::StatePlaying || MenuState(state));
+    // (with a player out the screen is whole again: it watches the other's game, at a game played alone's cost)
+    bool wants = camera != nullptr && (state == GameController::StatePlaying || MenuState(state));
     if (!wants)
     {
         EndSplit(controller);
@@ -429,37 +431,17 @@ void SecondaryDied()
     u32 player = SecondaryPlayer();
     TakeLife(player);
     g_Down[player] = true;
+    g_DeadFrames = 0;
     TakeAway();
 }
 
-// The primary was about to die while the secondary lives: it takes the secondary's place (the survivor plays it on), its own
-// player is out
-void SwapIntoSecondary(InstanceContext* first, InstanceContext* second)
+// An instance put at a place in a chunk (its follow camera with it, starting over)
+void PutAt(InstanceContext* instance, const Matrix4x4* matrix, ChunkData* chunk)
 {
-    u32 player = PrimaryPlayer();
-    TakeLife(player);
-    g_Down[player] = true;
-
-    ObjectPlace* from = second->place;
-    RotateAndTranslate(from);
-    Matrix4x4 matrix = from->matrix;
-    Vector4 position = *RowOf(&matrix, 3);
-    position.w = 1.0f;
-    ChunkData* chunk = second->chunk;
-    CharacterAgent* survivor = CharacterOf(second);
-    CharacterAgent* character = CharacterOf(first);
-    if (survivor != nullptr && character != nullptr)
+    auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, NodeFollow));
+    if (chunk != nullptr && chunk != instance->chunk)
     {
-        u32 points = static_cast<CreaturePart*>(survivor->part)->flags.hitPoints;
-        static_cast<CreaturePart*>(character->part)->flags.hitPoints = points != 0 ? points : 1;
-        character->velocity = {0.0f, 0.0f, 0.0f, 1.0f};
-    }
-
-    TakeAway();
-    auto* follow = static_cast<FollowNode*>(GetGameNode(&first->nodes, NodeFollow));
-    if (chunk != nullptr && chunk != first->chunk)
-    {
-        MoveToChunk(chunk, first);
+        MoveToChunk(chunk, instance);
         ReferencedObject* camera = follow != nullptr && follow->cameraInstance != nullptr ? follow->cameraInstance->object : nullptr;
         if (camera != nullptr)
         {
@@ -467,14 +449,16 @@ void SwapIntoSecondary(InstanceContext* first, InstanceContext* second)
         }
     }
 
-    if (SetPlaceMatrix(first->place, &matrix) != 0)
+    if (SetPlaceMatrix(instance->place, matrix) != 0)
     {
-        QueueObject(first);
+        QueueObject(instance);
     }
 
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&first->nodes, NodeObject));
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
     if (node != nullptr)
     {
+        Vector4 position = *RowOf(matrix, 3);
+        position.w = 1.0f;
         node->frameStart = position;
     }
 
@@ -482,8 +466,37 @@ void SwapIntoSecondary(InstanceContext* first, InstanceContext* second)
     {
         follow->camera.rig.Restart();
     }
+}
 
+// The primary was about to die while the secondary lives. The game's played character must not die (the game would restart its
+// checkpoint), so the two change places: the primary goes on where the survivor stood, played by the survivor, and the
+// secondary dies where the primary was, in the dead player's half -- its death plays out there, then its player is out
+void ChangePlaces(InstanceContext* first, InstanceContext* second)
+{
+    RotateAndTranslate(first->place);
+    RotateAndTranslate(second->place);
+    Matrix4x4 dying = first->place->matrix;
+    Matrix4x4 living = second->place->matrix;
+    ChunkData* dyingChunk = first->chunk;
+    ChunkData* livingChunk = second->chunk;
+    CharacterAgent* character = CharacterOf(first);
+    CharacterAgent* other = CharacterOf(second);
+    u32 points = static_cast<CreaturePart*>(other->part)->flags.hitPoints;
+    static_cast<CreaturePart*>(character->part)->flags.hitPoints = points != 0 ? points : 1;
+    other->velocity = character->velocity;
+    character->velocity = {0.0f, 0.0f, 0.0f, 1.0f};
+    PutAt(first, &living, livingChunk);
+    PutAt(second, &dying, dyingChunk);
     g_Swapped = !g_Swapped;
+    auto* controls = static_cast<ControlsNode*>(GetGameNode(&second->nodes, NodeControls));
+    if (controls != nullptr)
+    {
+        controls->pad = PadOfPlayer(SecondaryPlayer());
+    }
+
+    g_DeadFrames = 0;
+    static_cast<CreaturePart*>(other->part)->flags.hitPoints = 0;
+    CoopKillCharacter(other);
 }
 
 bool MenuState(u32 state)
@@ -493,10 +506,11 @@ bool MenuState(u32 state)
 
 bool RestartState(u32 state)
 {
+    // (not the fades and starts a cutscene goes through: a player who is out stays out past a cutscene; the game's own
+    // checkpoint restart says so itself: CoopPrimaryRestart)
     return state == GameController::StateLoadingLevel || state == GameController::StateNewGame ||
-           state == GameController::StateStartingPlay || state == GameController::StateFadingOut ||
-           state == GameController::StateRestarting || state == GameController::StateGameOver ||
-           state == GameController::StateMainMenu || state == GameController::StateTitle;
+           state == GameController::StateGameOver || state == GameController::StateMainMenu ||
+           state == GameController::StateTitle;
 }
 
 void StepPlayers(GameController* controller)
@@ -615,7 +629,7 @@ void StepPlayers(GameController* controller)
         CharacterAgent* survivor = CharacterOf(second);
         if (second != nullptr && survivor != nullptr && survivor->state.dead == 0 && second->chunk != nullptr)
         {
-            SwapIntoSecondary(first, second);
+            ChangePlaces(first, second);
             return;
         }
     }
@@ -647,10 +661,16 @@ void StepPlayers(GameController* controller)
 
     if (character->state.dead != 0)
     {
-        SecondaryDied();
+        // Its death plays out (its script ends it: CoopSecondPlayerDied); out after a while at the latest, or with its chunk
+        if (++g_DeadFrames > DeathFramesMost || second->chunk == nullptr)
+        {
+            SecondaryDied();
+        }
+
         return;
     }
 
+    g_DeadFrames = 0;
     // It roams where it likes: the chunks load around it too (CoopLoadingFocus); only when its chunk is gone (unloaded under it)
     // is it made again beside the primary
     if (second->chunk == nullptr)
@@ -737,7 +757,9 @@ bool CoopPrimaryRestart()
         return true;
     }
 
-    // The last character died: the game restarts its checkpoint (or ends, with no lives left) as it always does
+    // The last character died: the game restarts its checkpoint (or ends, with no lives left) as it always does, and both
+    // players are back after it
+    g_Restarted = true;
     return false;
 }
 
@@ -1244,34 +1266,26 @@ void CoopQueueHud()
         return;
     }
 
+    // A player who is out watches the other's game: who, and until when
+    for (u32 player = 0; player < 2; player++)
+    {
+        if (g_Down[player] && Second() == nullptr)
+        {
+            const char* why = LivesOf(player) > 0 ? "is out  back at the next checkpoint" : "is out of lives";
+            Text(renderer, player == 0 ? "player 1" : "player 2", 0.5f, 0.86f, 0.6f, TextAlignment::Centred);
+            Text(renderer, why, 0.5f, 0.92f, 0.5f, TextAlignment::Centred);
+        }
+    }
+
     if (!g_Split)
     {
         return;
     }
 
-    // The second player's half: its corner, its size
+    // P2 in the second player's half's corner
     f32 left = g_SplitSideBySide ? 0.5f : 0.0f;
     f32 top = g_SplitSideBySide ? 0.0f : 0.5f;
-    f32 width = g_SplitSideBySide ? 0.5f : 1.0f;
-    f32 height = g_SplitSideBySide ? 1.0f : 0.5f;
-    f32 iconX = left + 0.05f;
-    f32 iconY = top + 0.05f;
-    Text(renderer, "P2", iconX, iconY, 0.5f, TextAlignment::Centred);
-
-    // A player who is out: why its half shows the other's game
-    for (u32 player = 0; player < 2; player++)
-    {
-        if (!g_Down[player])
-        {
-            continue;
-        }
-
-        f32 x = (player == 0 ? 0.0f : left) + width * 0.5f;
-        f32 y = (player == 0 ? 0.0f : top) + height * 0.82f;
-        const char* why = LivesOf(player) > 0 ? "out  back at the next checkpoint" : "out of lives";
-        Text(renderer, player == 0 ? "P1" : "P2", x, y - 0.06f, 0.6f, TextAlignment::Centred);
-        Text(renderer, why, x, y, 0.5f, TextAlignment::Centred);
-    }
+    Text(renderer, "P2", left + 0.05f, top + 0.05f, 0.5f, TextAlignment::Centred);
 }
 
 u32 CoopInDrawnCell(InstanceContext* instance, u32 inView)

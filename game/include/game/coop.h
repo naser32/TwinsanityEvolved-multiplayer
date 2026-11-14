@@ -125,3 +125,6 @@ bool CoopPrimaryRestart();
 bool CoopTakesLife(InstanceContext* owner);
 // A checkpoint was set: a player who is out comes back
 void CoopCheckpointReached();
+// A character killed as a hit that takes its last hit point kills it (characterstate.cpp's Die: its death event, its script)
+struct CharacterAgent;
+void CoopKillCharacter(CharacterAgent* agent);

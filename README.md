@@ -14,9 +14,9 @@ This fork adds a second player on a second controller, on a split screen (local;
 - Connect two controllers. The first one plays player 1, the second one is player 2.
 - While you play, press **START** on the second controller: a second copy of your character appears beside you.
 - The lives and the wumpa fruit are shared: the game's own counts, whoever picks a fruit up or dies.
-- A player who dies is out: its half shows the other player's game until a checkpoint is reached, then it comes back
-  beside the other (while there are lives left). When player 1 dies and player 2 lives, the game's character carries on from
-  where player 2 stood, played by player 2. When both are dead the game restarts its checkpoint as usual.
+- A player who dies is out once its death has played: the screen is whole again and shows the other player's game until a
+  checkpoint is reached, then it comes back beside the other (while there are lives left). When both are dead the game
+  restarts its checkpoint as usual. A cutscene does not bring a player who is out back.
 - For a while after play starts, a line at the bottom says how the second controller joins.
 - Player 2 goes wherever it likes: the level loads around both players.
 - Player 2 picks up wumpa fruit (its own count, shown at the top left of its half with the wumpa icon and a small `P2`), bounces off creatures,

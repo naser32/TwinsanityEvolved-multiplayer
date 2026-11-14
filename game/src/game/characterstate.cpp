@@ -229,6 +229,12 @@ void Die(CharacterAgent* agent, InstanceContext* sender)
     RunAgentEvent(agent, EventDied, reinterpret_cast<u32>(sender), 0, 0);
 }
 
+// TwinsanityEvolved: the two-player mod's way to Die (game/coop.h CoopKillCharacter, at the file's end)
+void KillForCoop(CharacterAgent* agent)
+{
+    Die(agent, nullptr);
+}
+
 // Invincible for 2 seconds after a hurt, unless it already is (StartInvincibility's kind 0 inline, its start time left)
 void StartHurtInvincibility(CharacterAgent* agent)
 {
@@ -1410,4 +1416,9 @@ void CharacterAgent::PlayRideSound(f32 strength)
 void CharacterAgent::Launch(f32 strength, const Vector4* velocity, InstanceContext* space)
 {
     PushBack(strength, velocity, EventStandingJump, space);
+}
+
+void CoopKillCharacter(CharacterAgent* agent)
+{
+    KillForCoop(agent);
 }
