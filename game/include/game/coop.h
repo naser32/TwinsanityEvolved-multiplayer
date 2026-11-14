@@ -22,3 +22,32 @@ void CoopSecondPlayerDied();
 // While the second player's character is being made: the game factory makes it a character of its own (GameFactoryStandIn: no
 // character already in play stands in for it, and it does not become the progress's character)
 bool CoopMakingSecondPlayer();
+
+// ---- The split screen: each player's half of the screen, seen through that player's own follow camera ----------------------
+// While the second player is in play the screen is split in two (top and bottom; a tap of SELECT on the second controller
+// turns it into left and right and back). The game's first renderer draws the second player's half and a second renderer the
+// first player's half, last, so the chunks' camera matrices the frame leaves (the controls' and the particles') are the first
+// player's, as in a game played alone. The platform holds each half's draws to its half (StartFrame's frame smaller than the
+// screen). The HUD and the menus are drawn over the whole screen.
+
+struct Renderer;
+struct RenderTargetDescription;
+struct Matrix4x4;
+
+// Whether the screen is split now
+bool CoopSplit();
+// After the game controller set its view (GameContext::GameEndFrame): each renderer given its player's view
+void CoopSetViews();
+// A renderer's scene starts (DrawRendererScene: its half's frame set up) and ends (the whole screen's again, for the overlay)
+void CoopBeginScene(Renderer* renderer);
+void CoopEndScene();
+// The chunks' draw stamp's mark for the scene being drawn: a chunk is drawn once a frame per player's half
+u32 CoopDrawStampMark();
+// The aspect a renderer's target has over the whole screen's (1 when the screen isn't split)
+f32 CoopViewShape(const RenderTargetDescription* target);
+// After the scenes (the particles and decals go in the first player's half), and before the HUD (the whole screen)
+void CoopAfterScenes();
+void CoopBeforeHud();
+// The camera the second player's stick is turned by (its own follow camera's matrix while the screen is split; else none: the
+// chunk's, the first player's camera)
+const Matrix4x4* CoopCameraMatrix(InstanceContext* instance);

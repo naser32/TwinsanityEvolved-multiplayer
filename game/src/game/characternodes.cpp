@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/followcamera.h"
 
 #include "game/agents.h"
@@ -253,7 +254,8 @@ u32 FollowNode::Update(TimeClock* clock)
 {
     GameProgress& progress = g_AgentNodesGameController->progress;
     InstanceContext* player = progress.Instance(progress.play.character);
-    if (player != owner && player != nullptr)
+    // TwinsanityEvolved: the two-player mod's second player's camera keeps following it (its half of the split screen)
+    if (player != owner && player != nullptr && !CoopIsSecondPlayer(owner))
     {
         StopFollowing();
         return GameNode::Update(clock);

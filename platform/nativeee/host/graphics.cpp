@@ -1447,7 +1447,33 @@ bool SameState(const ps2e_draw_state& a, const ps2e_draw_state& b) {
            a.scissor_y1 == b.scissor_y1 && a.no_colour_write == b.no_colour_write;
 }
 
-Draw& OpenDraw(uint32_t bucket, const ps2e_draw_state& state, bool copy_frame = false) {
+// ---- THE TWO-PLAYER MOD'S SPLIT SCREEN (game/include/game/coop.h) -----------------------------------------------------
+// The game draws each half of a split screen as a renderer of its own whose frame is that half (StartFrame's rectangle): every
+// draw recorded while the frame is smaller than the screen is held to that rectangle (its scissor, or the part of its own
+// scissor inside it), so a half's triangles never reach the other half. A frame the size of the screen holds nothing.
+struct ViewScissor {
+    bool on = false;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // inclusive frame pixels (ps2e_draw_state's scissor)
+};
+ViewScissor g_view_scissor;
+
+ps2e_draw_state Viewed(const ps2e_draw_state& in) {
+    if (!g_view_scissor.on) return in;
+    ps2e_draw_state s = in;
+    const ViewScissor& v = g_view_scissor;
+    if ((s.scissor_x0 | s.scissor_y0 | s.scissor_x1 | s.scissor_y1) == 0) {
+        s.scissor_x0 = v.x0; s.scissor_y0 = v.y0; s.scissor_x1 = v.x1; s.scissor_y1 = v.y1;
+    } else {
+        s.scissor_x0 = std::max(s.scissor_x0, v.x0); s.scissor_y0 = std::max(s.scissor_y0, v.y0);
+        s.scissor_x1 = std::min(s.scissor_x1, v.x1); s.scissor_y1 = std::min(s.scissor_y1, v.y1);
+        if (s.scissor_x1 < s.scissor_x0) s.scissor_x1 = s.scissor_x0;
+        if (s.scissor_y1 < s.scissor_y0) s.scissor_y1 = s.scissor_y0;
+    }
+    return s;
+}
+
+Draw& OpenDraw(uint32_t bucket, const ps2e_draw_state& given, bool copy_frame = false) {
+    const ps2e_draw_state state = Viewed(given);   // (before the join: a half's draw never joins the other half's)
     auto& b = g.buckets[bucket < TE_GFX_BUCKET_COUNT ? bucket : TE_GFX_BUCKET_UI];
     g.draws++;
     // a draw asking for a fresh frame copy never joins the previous one (its copy would predate that draw's triangles)
@@ -1945,7 +1971,7 @@ DeferredBuild& ReserveDeferred(uint32_t bucket, const ps2e_draw_state& state) {
 #if defined(__vita__)
     ForgetExpansion(b, b.used - 1);
 #endif
-    d.state = state;
+    d.state = Viewed(state);
     d.verts.clear();
     d.ext = nullptr;
     d.ext_count = 0;
@@ -5696,7 +5722,7 @@ ps2e_draw_mesh_params& RecordMeshInPlace(uint32_t bucket, const ps2e_draw_state&
     d.verts.clear();
     d.ext_count = 0;
     d.tag = g.tag;
-    d.state = state;
+    d.state = Viewed(state);
     return d.own_params;
 }
 #if defined(__vita__)
@@ -6020,7 +6046,7 @@ void RecordSkinMesh(uint32_t bucket, const ps2e_draw_state& state, uint32_t mesh
 #if defined(__vita__)
     ForgetExpansion(b, b.used - 1);
 #endif
-    d.state = state;
+    d.state = Viewed(state);
     d.verts.clear();
     d.ext = nullptr;
     d.ext_count = 0;
@@ -6335,6 +6361,7 @@ void ps2e_graphics_finish_scene(ps2e_s32 effects) {
 void ps2e_gfx2_frame_reset(ps2e_s32 movie) {
     (void)movie;
     ClearBuckets();
+    g_view_scissor.on = false;   // (a split screen's half frame starts over with the next frame's StartFrame)
 }
 
 // StartFrame: the frame's clear as the first draw of bucket 0 -- the strips of the frame's rectangle in the clear colour
@@ -6345,6 +6372,19 @@ void ps2e_graphics_start_frame(ps2e_u32 frame) {
     g.frame = *f;
     g.have_frame = true;
     g.start_frames++;
+    {
+        // the two-player mod's split screen (Viewed above): a frame smaller than the screen holds the draws to it
+        const int sw = ScreenW(), sh = ScreenH();
+        const int fx = f->x - int(GsOriginX()), fy = f->y - int(GsOriginY());
+        // (a half: the full width and half the height, or the full height and half the width -- no other frame of the game's)
+        const bool halfHigh = f->width >= sw && std::abs(f->height * 2 - sh) <= 2;
+        const bool halfWide = f->height >= sh && std::abs(f->width * 2 - sw) <= 2;
+        g_view_scissor.on = f->width > 0 && f->height > 0 && (halfHigh || halfWide);
+        g_view_scissor.x0 = std::max(fx, 0);
+        g_view_scissor.y0 = std::max(fy, 0);
+        g_view_scissor.x1 = std::min(fx + f->width, sw) - 1;
+        g_view_scissor.y1 = std::min(fy + f->height, sh) - 1;
+    }
     EnsureDevice();
     if (!f->clearColor && !f->clearDepth) return;
     g.clears++;

@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/controls.h"
 
 #include "game/agents.h"
@@ -259,6 +260,12 @@ void CharacterControls::Frame(TimeClock*, GamePad* pad, InstanceContext* instanc
 
     ObjectPlace* place = instance->place;
     const Matrix4x4* view = &instance->chunk->matrix;
+    // TwinsanityEvolved: the two-player mod's second player steers by its own camera on a split screen (game/coop.h)
+    if (const Matrix4x4* own = CoopCameraMatrix(instance))
+    {
+        view = own;
+    }
+
     RotateAndTranslate(place);
     f32 length = __builtin_sqrtf(stick.x * stick.x + stick.y * stick.y + stick.z * stick.z);
     Vector4 world;

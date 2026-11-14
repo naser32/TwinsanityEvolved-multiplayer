@@ -9,7 +9,7 @@ this repository — you need your own disc image, which is read at run time.
 
 ## Two players (naser949's mod)
 
-This fork adds a second player on a second controller (step 1: local, shared camera; split screen comes next).
+This fork adds a second player on a second controller, on a split screen (local; online play comes later).
 
 - Connect two controllers. The first one plays player 1, the second one is player 2.
 - While you play, press **START** on the second controller: a second copy of your character appears beside you.
@@ -17,8 +17,12 @@ This fork adds a second player on a second controller (step 1: local, shared cam
 - If player 2 falls far behind (or falls below), it is brought back beside player 1.
 - During cutscenes, vehicles and loads player 2 is taken away, and comes back when play goes on.
 - Hold **SELECT** on the second controller for a second to leave.
+- While player 2 plays, the screen is split: player 1 on the top half, player 2 on the bottom half, each with their own camera
+  (the right stick turns your own). A tap of **SELECT** on the second controller switches to left / right halves and back.
+- Known for now: particles (sparks, smoke) and decals show in player 1's half only.
 
-The code: `game/src/game/coop.cpp` (the game side), `platform/nativeee/host/te_input.cpp` (the second controller feeds pad 1).
+The code: `game/src/game/coop.cpp` (the game side), `platform/nativeee/host/te_input.cpp` (the second controller feeds pad 1),
+`platform/nativeee/host/graphics.cpp` (each half's draws held to its half).
 
 ## What's new
 
