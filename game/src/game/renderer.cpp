@@ -462,7 +462,8 @@ void RenderTargetDescription::Destroy(u32 flags)
 extern "C" void SetRendererView(Renderer* renderer, RenderView* view)
 {
     // TwinsanityEvolved: a split screen's half has its own shape (game/coop.h; 1 otherwise)
-    view->Update(TvAspect() * CoopViewShape(renderer->target));
+    view->Update(TvAspect() * CoopViewAspect(renderer->target));
+    CoopFixProjection(renderer->target, view);
     renderer->view = view;
 }
 
@@ -586,7 +587,7 @@ extern "C" void DrawRendererScene(Renderer* renderer)
             Matrix4x4 identity;
             InitIdentityMatrix(&identity);
             ClearLightingUnused();
-            s32 fov = lens->fov;
+            s32 fov = CoopViewFov(renderer->target, lens->fov);
             f32 aspect = TvAspect() * CoopViewShape(renderer->target);
             Platform::Graphics::SetViewFrustum(lens->nearPlane, lens->farPlane, aspect, &fov);
             renderer->view->MakeMatrices(renderer->target);

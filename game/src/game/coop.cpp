@@ -1002,3 +1002,57 @@ void CoopNearerListener(const Vector4* at, Vector4* local)
         *local = other;
     }
 }
+
+// ---- a half's view: the first player's width of view, less height ---------------------------------------------------------
+// A top or bottom half is twice as wide as it is high: keeping the game's vertical field of view there would show twice the
+// width of a game played alone in each half (and build twice its geometry, twice over). The half keeps the usual width of view
+// and sees half the height instead: things are the size they are in a game played alone. A left or right half keeps the
+// height and sees half the width.
+
+f32 CoopViewAspect(const RenderTargetDescription* target)
+{
+    f32 shape = CoopViewShape(target);
+    return shape < 1.0f ? shape : 1.0f;
+}
+
+void CoopFixProjection(const RenderTargetDescription* target, RenderView* view)
+{
+    // (never split: the projection is the game's own, untouched)
+    if (g_Whole == nullptr || view->inverseAspect == 0.0f)
+    {
+        return;
+    }
+
+    f32 shape = CoopViewShape(target);
+    f32 cotangent = view->projection.m[0][0] / view->inverseAspect;
+    view->projection.m[1][1] = 1.0f < shape ? cotangent * shape : cotangent;
+}
+
+s32 CoopViewFov(const RenderTargetDescription* target, s32 fov)
+{
+    f32 shape = CoopViewShape(target);
+    if (!(1.0f < shape))
+    {
+        return fov;
+    }
+
+    // The angle whose half's tangent is the lens's half's over the shape (the tangent grows with the angle: halved in)
+    s32 half = static_cast<s32>(static_cast<f32>(fov) * 0.5f);
+    f32 wanted = TanOfAngle(&half) / shape;
+    s32 low = 0;
+    s32 high = half;
+    for (s32 step = 0; step < 24 && low + 1 < high; step++)
+    {
+        s32 middle = low + (high - low) / 2;
+        if (TanOfAngle(&middle) < wanted)
+        {
+            low = middle;
+        }
+        else
+        {
+            high = middle;
+        }
+    }
+
+    return high * 2;
+}

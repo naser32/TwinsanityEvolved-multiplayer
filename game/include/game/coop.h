@@ -97,3 +97,9 @@ u32 CoopInDrawnCell(InstanceContext* instance, u32 inView);
 // sound's place in the world)
 struct Vector4;
 void CoopNearerListener(const Vector4* at, Vector4* local);
+// A half's view (see coop.cpp): what the view's aspect is multiplied by, the projection's height set after the view's
+// update, and the field of view its frustum is made for (with the aspect times CoopViewShape)
+struct RenderView;
+f32 CoopViewAspect(const RenderTargetDescription* target);
+void CoopFixProjection(const RenderTargetDescription* target, RenderView* view);
+s32 CoopViewFov(const RenderTargetDescription* target, s32 fov);
