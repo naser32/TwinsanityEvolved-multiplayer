@@ -7,6 +7,7 @@
 // and te::input::HandleSdlEvent(e) for every event it polls -- so keyboard events reach the pad through one queue.
 // Without SDL input (te::Settings::sdl_input false, or SDL refusing to start) the neutral connected pad stays.
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -220,6 +221,66 @@ void CheckVitaPad(VitaPad& p) {
     }
 }
 #endif
+#if TE_HAVE_SDL_INPUT
+// ---- THE TWO-PLAYER MOD'S SECOND CONTROLLER (game/include/game/coop.h) -------------------------------------------------
+// The game reads two pads (game/src/main.cpp); pad 1 is the second player's. With two or more controllers connected and the
+// engine's pad selection on Auto (which merges every controller into pad 0), the first controller is selected for pad 0 and the
+// next one feeds pad 1 here; with one controller left the selection goes back to Auto. A pad chosen in the settings stays
+// chosen: pad 1 is then the first other controller. Pad 1 reads as a connected, neutral pad when there is no second controller
+// (the game's second pad never stops it: game/src/game/pads.cpp).
+bool g_coop_selected = false;
+
+// Before pad 0's read: the selection steered (as above)
+void SteerCoopSelection() {
+    ps2r::platform::sdl::GamepadBackend* gp = g_input ? g_input->Gamepad() : nullptr;
+    if (!gp) return;
+    const std::vector<ps2r::platform::sdl::PadInfo>& pads = gp->Snapshot();
+    if (pads.size() >= 2) {
+        if (gp->Selection() == ps2r::platform::sdl::GamepadBackend::kSelectionAuto) {
+            gp->SetSelection(pads[0].instance_id);
+            g_coop_selected = true;
+            std::fprintf(stderr, "[twinsanityevolved] two players: pad 0 is %s, pad 1 the next controller\n", pads[0].name.c_str());
+        }
+    } else if (g_coop_selected) {
+        g_coop_selected = false;
+        if (gp->Selection() >= 0) gp->SetSelection(ps2r::platform::sdl::GamepadBackend::kSelectionAuto);
+        std::fprintf(stderr, "[twinsanityevolved] two players: one controller left, it plays pad 0\n");
+    }
+}
+
+uint8_t CoopStickByte(float v) {
+    const long b = std::lround(v * 127.5f + 127.5f);
+    return static_cast<uint8_t>(b < 0 ? 0 : b > 255 ? 255 : b);
+}
+
+// Pad 1: the first connected controller that isn't pad 0's selected one (none: neutral)
+Pads::Sample SecondPadSample() {
+    Pads::Sample s;
+    s.connected = true;
+    ps2r::platform::sdl::GamepadBackend* gp = g_input ? g_input->Gamepad() : nullptr;
+    if (!gp || !gp->Enabled()) return s;
+    const int selected = gp->Selection();
+    if (selected < 0) return s;   // Auto (one controller: it's pad 0's) or None
+    const std::vector<ps2r::platform::sdl::PadInfo>& pads = gp->Snapshot();
+    for (size_t i = 0; i < pads.size() && i < gp->OpenPads(); ++i) {
+        if (pads[i].instance_id == selected) continue;
+        SDL_GameController* gc = static_cast<SDL_GameController*>(gp->PadController(i));
+        if (!gc) continue;
+        ps2r::platform::sdl::GamepadRaw raw;
+        for (int a = 0; a < ps2r::platform::sdl::GamepadRaw::kAxes; ++a)
+            raw.axis[a] = SDL_GameControllerGetAxis(gc, SDL_GameControllerAxis(a));
+        for (int b = 0; b < ps2r::platform::sdl::GamepadRaw::kButtons; ++b)
+            raw.button[b] = SDL_GameControllerGetButton(gc, SDL_GameControllerButton(b));
+        ps2r::platform::sdl::NormalizedInput in;
+        ps2r::platform::sdl::GamepadConvert::Convert(raw, gp->Deadzone(), in, gp->Sensitivity(), gp->ButtonMap());
+        s.buttons = static_cast<uint16_t>(in.buttons);
+        s.lx = CoopStickByte(in.lx); s.ly = CoopStickByte(in.ly);
+        s.rx = CoopStickByte(in.rx); s.ry = CoopStickByte(in.ry);
+        return s;
+    }
+    return s;
+}
+#endif
 bool g_pump_owned = true;
 bool g_installed = false;
 struct Injection {
@@ -297,7 +358,8 @@ bool Install(Pads& pads, const Settings& settings) {
     const float dt = 1.0f / static_cast<float>(hz);
     pads.SetSampler([dt](unsigned port, unsigned slot) -> Pads::Sample {
         Pads::Sample s;
-        if (port != 0 || slot != 0) return s;   // one pad: the engine's InputSystem is pad 0
+        if (port == 1 && slot == 0) return SecondPadSample();   // the two-player mod's second controller (above)
+        if (port != 0 || slot != 0) return s;   // the engine's InputSystem is pad 0
         // (the device's "hook pads" was 0.4-0.6 ms a tick: its two halves as their own sections, TE_PROF=1; the game
         // thread's slot, no thread_local read)
         static const unsigned short profPump = te::prof::Register("pads: SDL event pump");
@@ -363,6 +425,7 @@ bool Install(Pads& pads, const Settings& settings) {
             for (Injection& k : g_injections)
                 if (Live(k, boundary)) g_input->Kbm()->InjectKey(k.scancode);
         }
+        SteerCoopSelection();
         te::prof::Scope readScope(profRead, te::prof::kGame);
         const ps2r::platform::sdl::PadSample p = g_input->Frame(dt);
         s.connected = g_input->Connected() || te::GetSettings().pad_connected;
