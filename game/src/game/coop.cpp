@@ -38,7 +38,8 @@ extern "C"
     extern void* G_ChunkManager;
 }
 
-// (defined with the players' step below)
+// (defined with the players' step and the player scope below)
+InstanceContext* ScopedRealPrimary();
 InstanceContext* Primary(GameController* controller);
 bool MenuState(u32 state);
 
@@ -49,9 +50,6 @@ namespace
 constexpr u32 SecondPadIndex = 1;
 // Frames of play before the second player is made (a level's start settles first), and after its death
 constexpr u32 SettleFrames = 30;
-// The wumpa fruit the second player gathered (the first player's are the game's own count) and its extra lives' worth
-u32 g_SecondWumpa = 0;
-constexpr u32 WumpaPerLife = 100;
 // Frames SELECT is held to leave
 constexpr u32 LeaveFrames = 60;
 // Where the second player is made: beside the first and a little above it (it drops to the ground)
@@ -78,12 +76,8 @@ bool g_Down[2] = {false, false};
 bool g_PendingSwap = false;
 bool g_Restarted = false;
 bool g_GameOver = false;
-u32 g_SecondLives = GameProgress::StartLives;
-constexpr u32 MostLives = 99;
-// Frames the second player's counts stay shown after they change, and the join prompt after play starts
-constexpr u32 HudShowFrames = 240;
+// Frames the join prompt stays after play starts
 constexpr u32 PromptFrames = 600;
-u32 g_HudFrames = 0;
 u32 g_PromptFrames = 0;
 
 u32 PrimaryPlayer()
@@ -102,27 +96,15 @@ GamePad* PadOfPlayer(u32 player)
     return pads != nullptr ? pads->pads[player] : nullptr;
 }
 
-u32 LivesOf(u32 player)
+// The lives and the wumpa fruit are the game's own, shared by the two players: a death of either takes a life
+u32 LivesOf(u32)
 {
-    return player == 0 ? G_GameController->progress.counts.lives : g_SecondLives;
+    return G_GameController->progress.counts.lives;
 }
 
-void TakeLife(u32 player)
+void TakeLife(u32)
 {
-    g_HudFrames = HudShowFrames;
-    if (Platform::System::InfiniteLives() != 0)
-    {
-        return;
-    }
-
-    if (player == 0)
-    {
-        G_GameController->oleg.AddLives(-1, 0);
-    }
-    else if (g_SecondLives > 0)
-    {
-        g_SecondLives--;
-    }
+    G_GameController->oleg.AddLives(Platform::System::InfiniteLives() != 0 ? 0 : -1, 0);
 }
 
 GamePad* SecondPad()
@@ -427,6 +409,12 @@ void StepSplit(GameController* controller)
 
 InstanceContext* Primary(GameController* controller)
 {
+    // (while a scope has the secondary in the played character's place -- its own frame, its scripts -- the real one)
+    if (InstanceContext* real = ScopedRealPrimary())
+    {
+        return real;
+    }
+
     return controller->progress.Instance(controller->progress.play.character);
 }
 
@@ -535,33 +523,15 @@ void StepPlayers(GameController* controller)
         g_Restarted = false;
         g_Swapped = false;
         g_PendingSwap = false;
-        if (g_GameOver)
-        {
-            g_GameOver = false;
-            g_SecondLives = GameProgress::StartLives;
-        }
-
-        if (g_SecondLives == 0 && controller->progress.counts.lives > 1 && Platform::System::InfiniteLives() == 0)
-        {
-            // (the first player hands one of its lives over)
-            controller->oleg.AddLives(-1, 0);
-            g_SecondLives = 1;
-        }
-
+        g_GameOver = false;
         g_Down[0] = false;
-        g_Down[1] = g_SecondLives == 0;
+        g_Down[1] = false;
         g_Wait = SettleFrames;
-        g_HudFrames = HudShowFrames;
         g_PromptFrames = g_Joined ? 0 : PromptFrames;
     }
 
     if (state == GameController::StatePlaying)
     {
-        if (g_HudFrames > 0)
-        {
-            g_HudFrames--;
-        }
-
         if (g_PromptFrames > 0)
         {
             g_PromptFrames--;
@@ -585,7 +555,6 @@ void StepPlayers(GameController* controller)
             g_Down[1] = false;
             g_Wait = 0;
             g_PromptFrames = 0;
-            g_HudFrames = HudShowFrames;
         }
 
         return;
@@ -768,14 +737,7 @@ bool CoopPrimaryRestart()
         return true;
     }
 
-    // The last character died: the game restarts its checkpoint, on the first player's lives -- the second player hands one over
-    // when the first has none
-    if (controller->progress.counts.lives == 0 && g_SecondLives > 0)
-    {
-        g_SecondLives--;
-        controller->oleg.AddLives(1, 0);
-    }
-
+    // The last character died: the game restarts its checkpoint (or ends, with no lives left) as it always does
     return false;
 }
 
@@ -792,12 +754,6 @@ bool CoopTakesLife(InstanceContext* owner)
         return true;
     }
 
-    if (owner == Primary(G_GameController) && PrimaryPlayer() == 1)
-    {
-        TakeLife(1);
-        return true;
-    }
-
     return false;
 }
 
@@ -809,7 +765,6 @@ void CoopCheckpointReached()
         {
             g_Down[player] = false;
             g_Wait = 20;
-            g_HudFrames = HudShowFrames;
         }
     }
 }
@@ -1027,6 +982,12 @@ struct PlayerPlaces
 PlayerPlaces g_Places = {~0u, nullptr, nullptr, false, {}, {}};
 }
 
+InstanceContext* ScopedRealPrimary()
+{
+    return g_ScopeDepth != 0 && g_ScopeSecond && g_Real.instance != nullptr ? static_cast<InstanceContext*>(g_Real.instance->object)
+                                                                            : nullptr;
+}
+
 CoopPlayerScope::CoopPlayerScope(const void* instance, const void* originator) : saved(nullptr), swapped(false)
 {
     InstanceContext* second = Second();
@@ -1075,7 +1036,10 @@ CoopPlayerScope::CoopPlayerScope(const void* instance, const void* originator) :
     else
     {
         auto* owner = static_cast<InstanceContext*>(const_cast<void*>(instance));
-        if (owner == nullptr || owner->place == nullptr)
+        // (only what a player plays against: a cutscene's director, a trigger or a camera near the second player still means
+        // the game's own played character by "the player")
+        constexpr u32 NearestKinds = 1u << NodeCrate | 1u << NodePickup | 1u << NodeCreature | 1u << NodeProjectile;
+        if (owner == nullptr || owner->place == nullptr || (owner->nodes.mask & NearestKinds) == 0)
         {
             return;
         }
@@ -1226,51 +1190,10 @@ void CoopSkinMatrices(const GameOGI* ogi, Matrix4x4** matrices)
     *matrices = copy;
 }
 
-bool CoopTakesWumpa(InstanceContext* from, u32 count)
+bool CoopTakesWumpa(InstanceContext*, u32)
 {
-    if (!g_Joined || from == nullptr || from->place == nullptr)
-    {
-        return false;
-    }
-
-    // The nearer character's player's: the one the fruit flew to, or that broke the crate
-    InstanceContext* second = Second();
-    InstanceContext* first = Primary(G_GameController);
-    u32 player = PrimaryPlayer();
-    if (second != nullptr && second->place != nullptr)
-    {
-        player = SecondaryPlayer();
-        if (first != nullptr && first->place != nullptr)
-        {
-            Vector4 at = PositionOf(from);
-            Vector4 a = PositionOf(first);
-            Vector4 b = PositionOf(second);
-            f32 ax = a.x - at.x, ay = a.y - at.y, az = a.z - at.z;
-            f32 bx = b.x - at.x, by = b.y - at.y, bz = b.z - at.z;
-            if (ax * ax + ay * ay + az * az <= bx * bx + by * by + bz * bz)
-            {
-                player = PrimaryPlayer();
-            }
-        }
-    }
-
-    if (player == 0)
-    {
-        return false;
-    }
-
-    g_HudFrames = HudShowFrames;
-    g_SecondWumpa += count;
-    while (g_SecondWumpa >= WumpaPerLife)
-    {
-        g_SecondWumpa -= WumpaPerLife;
-        if (g_SecondLives < MostLives)
-        {
-            g_SecondLives++;
-        }
-    }
-
-    return true;
+    // The wumpa fruit are the game's own count, whoever picks them up
+    return false;
 }
 
 ReferencedObject* CoopLoadingFocus()
@@ -1287,25 +1210,6 @@ bool CoopKeepsDrawn()
 
 namespace
 {
-void NumberText(char* text, u32 n)
-{
-    char digits[12];
-    s32 count = 0;
-    do
-    {
-        digits[count++] = static_cast<char>('0' + n % 10);
-        n /= 10;
-    } while (n != 0 && count < 11);
-
-    s32 at = 0;
-    while (count > 0)
-    {
-        text[at++] = digits[--count];
-    }
-
-    text[at] = 0;
-}
-
 void Text(Renderer* renderer, const char* text, f32 x, f32 y, f32 scale, u32 alignment)
 {
     renderer->textScale.x = scale;
@@ -1346,41 +1250,13 @@ void CoopQueueHud()
     }
 
     // The second player's half: its corner, its size
-    constexpr f32 IconWidth = 0.06f;
-    constexpr f32 IconHeight = 0.08f;
-    OLEG* oleg = &controller->oleg;
     f32 left = g_SplitSideBySide ? 0.5f : 0.0f;
     f32 top = g_SplitSideBySide ? 0.0f : 0.5f;
     f32 width = g_SplitSideBySide ? 0.5f : 1.0f;
     f32 height = g_SplitSideBySide ? 1.0f : 0.5f;
-    f32 iconX = left + 0.07f;
-    f32 iconY = top + 0.08f;
-    // P2 always; the wumpa fruit (the HUD's own sprite, the count beside it) and the lives for a while after they change, as
-    // the first player's
-    Text(renderer, "P2", iconX, iconY + 0.075f, 0.5f, TextAlignment::Centred);
-    if (g_HudFrames > 0)
-    {
-        Sprite* sprite = &oleg->sprites[OLEG::SpriteWumpa];
-        if (sprite->material != nullptr && 0.0f < sprite->texture.width && 0.0f < sprite->texture.height)
-        {
-            Matrix4x4 matrix;
-            InitIdentityMatrix(&matrix);
-            matrix.m[0][0] = IconWidth / sprite->texture.width;
-            matrix.m[1][1] = IconHeight / sprite->texture.height;
-            // (a turned sprite is placed by its middle, another by its corner: SpriteWidget::Draw)
-            matrix.m[3][0] = sprite->turned != 0 ? iconX : iconX - IconWidth * 0.5f;
-            matrix.m[3][1] = sprite->turned != 0 ? iconY : iconY - IconHeight * 0.5f;
-            renderer->colour = colour;
-            QueuePlacedShape(renderer, &matrix, sprite, oleg->hudWumpaSprite.flags.layer);
-        }
-
-        char text[16];
-        NumberText(text, g_SecondWumpa);
-        Text(renderer, text, iconX + 0.05f, iconY, 1.0f, TextAlignment::MiddleLeft);
-        NumberText(text, g_SecondLives);
-        Text(renderer, text, left + width - 0.07f, iconY, 1.0f, TextAlignment::MiddleRight);
-        Text(renderer, "lives", left + width - 0.07f, iconY + 0.075f, 0.5f, TextAlignment::MiddleRight);
-    }
+    f32 iconX = left + 0.05f;
+    f32 iconY = top + 0.05f;
+    Text(renderer, "P2", iconX, iconY, 0.5f, TextAlignment::Centred);
 
     // A player who is out: why its half shows the other's game
     for (u32 player = 0; player < 2; player++)
