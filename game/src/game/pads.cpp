@@ -256,7 +256,9 @@ u32 GamePadController::Update(f32 seconds)
 
         if (!read)
         {
-            if ((flags.pads & 1) != 0)
+            // TwinsanityEvolved: a pad that couldn't be read counts by its own bit (retail checked pad 0's for every pad: with the
+            // two-player mod's second pad, a second controller that isn't there would stop the game)
+            if ((flags.pads & (1u << i)) != 0)
             {
                 result = 0;
             }

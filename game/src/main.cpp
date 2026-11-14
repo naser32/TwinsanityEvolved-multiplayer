@@ -18,8 +18,9 @@ constexpr s32 StreamChannels = 9;
 // The game's clock goes by the display's frames: 50 a second on a PAL TV, 60 on an NTSC one
 constexpr s32 PalFramesPerSecond = 50;
 constexpr s32 NtscFramesPerSecond = 60;
-// One pad, so pad 1's bit (of GamePadController's bit per pad made) is never set
-constexpr s32 PadCount = 1;
+// TwinsanityEvolved: two pads, the second for the two-player mod (game/coop.h); retail made one. Pad 1's bit (of
+// GamePadController's bit per pad made) is cleared once it's made, so a second pad that isn't there never stops the game
+constexpr s32 PadCount = 2;
 constexpr u32 SecondPadBit = 1u << 1;
 
 bool IsPlayingMovie(const GameMovieController* movie)

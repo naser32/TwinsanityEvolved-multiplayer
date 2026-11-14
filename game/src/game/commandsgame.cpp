@@ -7,6 +7,7 @@
 #include "game/characters.h"
 #include "game/clock.h"
 #include "game/controllers.h"
+#include "game/coop.h"
 #include "game/cutscenereader.h"
 #include "game/cutsceneskip.h"
 #include "game/gamecontroller.h"
@@ -85,8 +86,15 @@ void ControllerRumbleCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLev
     VibrateForShake(strength);
 }
 
-void RestartFromCheckpointCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void RestartFromCheckpointCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
+    // TwinsanityEvolved: the two-player mod's second player dying restarts no checkpoint (game/coop.h)
+    if (CoopIsSecondPlayer(runner->agentNode->owner))
+    {
+        CoopSecondPlayerDied();
+        return;
+    }
+
     G_GameController->RestartFromCheckpoint();
 }
 

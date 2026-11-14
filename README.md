@@ -7,6 +7,19 @@ decompilation's own `include/platform/*.h` is the only seam. On the PS Vita the 
 console's ARM processor instead, with the same seam and the 32 MB as a block of the program. No game data of any kind is in
 this repository — you need your own disc image, which is read at run time.
 
+## Two players (naser949's mod)
+
+This fork adds a second player on a second controller (step 1: local, shared camera; split screen comes next).
+
+- Connect two controllers. The first one plays player 1, the second one is player 2.
+- While you play, press **START** on the second controller: a second copy of your character appears beside you.
+- Player 2 dying never restarts the checkpoint and costs no life: player 2 comes back beside player 1 after a moment.
+- If player 2 falls far behind (or falls below), it is brought back beside player 1.
+- During cutscenes, vehicles and loads player 2 is taken away, and comes back when play goes on.
+- Hold **SELECT** on the second controller for a second to leave.
+
+The code: `game/src/game/coop.cpp` (the game side), `platform/nativeee/host/te_input.cpp` (the second controller feeds pad 1).
+
 ## What's new
 
 Since v0.1.8 (the full list for players is in [RELEASE-NOTES.txt](RELEASE-NOTES.txt)):

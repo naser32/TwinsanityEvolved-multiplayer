@@ -7,6 +7,7 @@
 #include "game/clock.h"
 #include "game/chunkloading.h"
 #include "game/controllers.h"
+#include "game/coop.h"
 #include "game/followcamera.h"
 #include "game/gamecontroller.h"
 #include "game/instances.h"
@@ -695,7 +696,10 @@ InstanceContext* GameFactoryStandIn(InstanceFactory* factory, ChunkEntry* chunk,
         s32 character = characterNode->agent->properties->GetInt(0);
         GameProgress* progress = &g_AgentsGameController->progress;
         InstanceContext* kept = nullptr;
-        if (character != static_cast<s32>(GameProgress::NoCharacter))
+        // TwinsanityEvolved: the two-player mod's second character is a character of its own (game/coop.h): no character in
+        // play stands in for it, and it doesn't become the progress's character
+        bool second = CoopMakingSecondPlayer();
+        if (!second && character != static_cast<s32>(GameProgress::NoCharacter))
         {
             Reference* reference = *CharacterHandle(progress, character);
             kept = reference != nullptr ? static_cast<InstanceContext*>(reference->object) : nullptr;
@@ -703,7 +707,11 @@ InstanceContext* GameFactoryStandIn(InstanceFactory* factory, ChunkEntry* chunk,
 
         ChunkData* keptChunk = kept != nullptr ? kept->chunk : nullptr;
         objectNode->information.flags.stays = 0;
-        if (keptChunk == nullptr)
+        if (second)
+        {
+            kept = context;
+        }
+        else if (keptChunk == nullptr)
         {
             kept = context;
             AssignReference(CharacterHandle(progress, character), context);

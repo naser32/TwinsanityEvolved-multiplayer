@@ -11,6 +11,7 @@
 #include "game/colour.h"
 #include "game/context.h"
 #include "game/controllers.h"
+#include "game/coop.h"
 #include "game/cutsceneskip.h"
 #include "game/decals.h"
 #include "game/effects.h"
@@ -382,6 +383,8 @@ u32 GameController::Update(u32 keepFreed)
         SetNextState(next);
     }
 
+    // TwinsanityEvolved: the two-player mod's second player (game/coop.h)
+    StepCoop(this);
     InstanceContext* player = CharacterInstance(&progress);
     auto* node = player != nullptr ? static_cast<PlayerNode*>(GetGameNode(&player->nodes, NodeCharacter)) : nullptr;
     PlayerCharacter* character = node != nullptr ? node->character : nullptr;
