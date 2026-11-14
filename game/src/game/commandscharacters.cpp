@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/commands.h"
 
 #include "game/agentparts.h"
@@ -1068,6 +1069,12 @@ void SetPlayerRespawnPositionCommand::Execute(TimeClock*, BehaviourRunner* runne
     }
     default:
         break;
+    }
+
+    // TwinsanityEvolved: two players -- a player who is out comes back at a checkpoint (game/coop.h)
+    if (set)
+    {
+        CoopCheckpointReached();
     }
 
     if (saves && set)

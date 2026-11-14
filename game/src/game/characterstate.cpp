@@ -1,3 +1,4 @@
+#include "game/coop.h"
 #include "game/agents.h"
 
 #include "game/animation.h"
@@ -217,6 +218,12 @@ void KeepContact(Agent* agent, const ContactMessage* message)
 
 void Die(CharacterAgent* agent, InstanceContext* sender)
 {
+    // TwinsanityEvolved: two players -- the played character does not die while the other player's lives (game/coop.h)
+    if (CoopPrimaryDying(agent))
+    {
+        return;
+    }
+
     agent->buttons.locked.value = CharacterButtons::LockAll;
     agent->state.dead = 1;
     RunAgentEvent(agent, EventDied, reinterpret_cast<u32>(sender), 0, 0);

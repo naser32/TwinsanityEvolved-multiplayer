@@ -7,6 +7,7 @@
 #include "game/cutscenereader.h"
 #include "game/font.h"
 #include "game/objects.h"
+#include "platform/system.h"
 #include "game/oleg.h"
 #include "game/shapes.h"
 #include "game/overlay.h"
@@ -37,6 +38,10 @@ extern "C"
     extern void* G_ChunkManager;
 }
 
+// (defined with the players' step below)
+InstanceContext* Primary(GameController* controller);
+bool MenuState(u32 state);
+
 namespace
 {
 
@@ -44,7 +49,6 @@ namespace
 constexpr u32 SecondPadIndex = 1;
 // Frames of play before the second player is made (a level's start settles first), and after its death
 constexpr u32 SettleFrames = 30;
-constexpr u32 DeathFrames = 90;
 // The wumpa fruit the second player gathered (the first player's are the game's own count) and its extra lives' worth
 u32 g_SecondWumpa = 0;
 constexpr u32 WumpaPerLife = 100;
@@ -62,11 +66,73 @@ u32 g_Wait = 0;
 u32 g_Selecting = 0;
 bool g_Making = false;
 
+// ---- who plays which character, lives, and who is out ---------------------------------------------------------------------
+// The game's own played character is the PRIMARY, the copy the SECONDARY. Player 1 (the first controller, the top or left half)
+// plays the primary and player 2 the secondary -- until the primary's player dies while the other lives: the primary is not let
+// die (the game would restart its checkpoint); it takes the secondary's place and the SURVIVOR plays it from there (swapped),
+// the dead player is out. A player who is out watches the other (its half shows the other's camera) until a checkpoint is
+// reached, then comes back as the secondary beside the other -- while it has lives left. When the last character dies, the
+// game restarts its checkpoint as it always does, and both come back.
+bool g_Swapped = false;
+bool g_Down[2] = {false, false};
+bool g_PendingSwap = false;
+bool g_Restarted = false;
+bool g_GameOver = false;
+u32 g_SecondLives = GameProgress::StartLives;
+constexpr u32 MostLives = 99;
+// Frames the second player's counts stay shown after they change, and the join prompt after play starts
+constexpr u32 HudShowFrames = 240;
+constexpr u32 PromptFrames = 600;
+u32 g_HudFrames = 0;
+u32 g_PromptFrames = 0;
+
+u32 PrimaryPlayer()
+{
+    return g_Swapped ? 1 : 0;
+}
+
+u32 SecondaryPlayer()
+{
+    return g_Swapped ? 0 : 1;
+}
+
+GamePad* PadOfPlayer(u32 player)
+{
+    auto* pads = static_cast<GamePadController*>(G_GamePadController);
+    return pads != nullptr ? pads->pads[player] : nullptr;
+}
+
+u32 LivesOf(u32 player)
+{
+    return player == 0 ? G_GameController->progress.counts.lives : g_SecondLives;
+}
+
+void TakeLife(u32 player)
+{
+    g_HudFrames = HudShowFrames;
+    if (Platform::System::InfiniteLives() != 0)
+    {
+        return;
+    }
+
+    if (player == 0)
+    {
+        G_GameController->oleg.AddLives(-1, 0);
+    }
+    else if (g_SecondLives > 0)
+    {
+        g_SecondLives--;
+    }
+}
+
 GamePad* SecondPad()
 {
     auto* pads = static_cast<GamePadController*>(G_GamePadController);
     return pads != nullptr ? pads->pads[SecondPadIndex] : nullptr;
 }
+
+u32 SecondaryPlayer();
+GamePad* PadOfPlayer(u32 player);
 
 InstanceContext* Second()
 {
@@ -170,7 +236,7 @@ InstanceContext* Make(InstanceContext* first)
     auto* controls = static_cast<ControlsNode*>(GetGameNode(&made->nodes, NodeControls));
     if (controls != nullptr)
     {
-        controls->pad = SecondPad();
+        controls->pad = PadOfPlayer(SecondaryPlayer());
     }
 
     // The character's model stays the first player's to the cutscenes (CharacterAgent::SetUp gave it to the copy)
@@ -222,6 +288,8 @@ f32 TiltShare()
 bool g_SideBySide = false;
 bool g_Split = false;
 bool g_SplitSideBySide = false;
+bool g_SplitSwapped = false;
+bool g_SecondHasCamera = false;
 // The whole screen's target (a copy of the first renderer's before the split), the second renderer (made once, kept: the
 // renderers' pool has no way out) and the second player's view
 RenderTargetDescription* g_Whole = nullptr;
@@ -301,7 +369,9 @@ void StepSplit(GameController* controller)
     g_SideBySide = CoopOptionValue(CoopOptionSplit) == 1;
     InstanceContext* camera = SecondCamera();
     u32 state = controller->State();
-    bool wants = camera != nullptr && (state == GameController::StatePlaying || state == GameController::StatePaused);
+    // (a player who is out keeps its half: it watches the other's camera)
+    bool watched = g_Joined && (g_Down[0] || g_Down[1]) && Primary(controller) != nullptr;
+    bool wants = (camera != nullptr || watched) && (state == GameController::StatePlaying || MenuState(state));
     if (!wants)
     {
         EndSplit(controller);
@@ -333,21 +403,112 @@ void StepSplit(GameController* controller)
         g_SecondView = RenderView::Construct(static_cast<RenderView*>(MemoryAllocate(sizeof(RenderView))));
     }
 
-    if (!g_Split || g_SplitSideBySide != g_SideBySide)
+    if (!g_Split || g_SplitSideBySide != g_SideBySide || g_SplitSwapped != g_Swapped)
     {
         g_Split = true;
         g_SplitSideBySide = g_SideBySide;
-        // The game's renderer the first player's half (top, left), the second renderer the second player's
-        TakeHalf(first->target, false, g_SideBySide);
-        TakeHalf(g_SecondRenderer->target, true, g_SideBySide);
+        g_SplitSwapped = g_Swapped;
+        // The game's renderer draws the primary's player's half (player 1: top, left), the second renderer the other's
+        TakeHalf(first->target, g_Swapped, g_SideBySide);
+        TakeHalf(g_SecondRenderer->target, !g_Swapped, g_SideBySide);
     }
 
     g_SecondRenderer->flags.draws = 1;
     g_SecondRenderer->flags.clearsColour = 1;
     g_SecondRenderer->flags.clearsDepth = 1;
-    AssignReference(&g_SecondView->cameraObject, camera);
+    g_SecondHasCamera = camera != nullptr;
+    if (camera != nullptr)
+    {
+        AssignReference(&g_SecondView->cameraObject, camera);
+    }
 }
 
+}
+
+InstanceContext* Primary(GameController* controller)
+{
+    return controller->progress.Instance(controller->progress.play.character);
+}
+
+// The secondary died: its player is out
+void SecondaryDied()
+{
+    if (Second() == nullptr)
+    {
+        return;
+    }
+
+    u32 player = SecondaryPlayer();
+    TakeLife(player);
+    g_Down[player] = true;
+    TakeAway();
+}
+
+// The primary was about to die while the secondary lives: it takes the secondary's place (the survivor plays it on), its own
+// player is out
+void SwapIntoSecondary(InstanceContext* first, InstanceContext* second)
+{
+    u32 player = PrimaryPlayer();
+    TakeLife(player);
+    g_Down[player] = true;
+
+    ObjectPlace* from = second->place;
+    RotateAndTranslate(from);
+    Matrix4x4 matrix = from->matrix;
+    Vector4 position = *RowOf(&matrix, 3);
+    position.w = 1.0f;
+    ChunkData* chunk = second->chunk;
+    CharacterAgent* survivor = CharacterOf(second);
+    CharacterAgent* character = CharacterOf(first);
+    if (survivor != nullptr && character != nullptr)
+    {
+        u32 points = static_cast<CreaturePart*>(survivor->part)->flags.hitPoints;
+        static_cast<CreaturePart*>(character->part)->flags.hitPoints = points != 0 ? points : 1;
+        character->velocity = {0.0f, 0.0f, 0.0f, 1.0f};
+    }
+
+    TakeAway();
+    auto* follow = static_cast<FollowNode*>(GetGameNode(&first->nodes, NodeFollow));
+    if (chunk != nullptr && chunk != first->chunk)
+    {
+        MoveToChunk(chunk, first);
+        ReferencedObject* camera = follow != nullptr && follow->cameraInstance != nullptr ? follow->cameraInstance->object : nullptr;
+        if (camera != nullptr)
+        {
+            MoveToChunk(chunk, camera);
+        }
+    }
+
+    if (SetPlaceMatrix(first->place, &matrix) != 0)
+    {
+        QueueObject(first);
+    }
+
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&first->nodes, NodeObject));
+    if (node != nullptr)
+    {
+        node->frameStart = position;
+    }
+
+    if (follow != nullptr)
+    {
+        follow->camera.rig.Restart();
+    }
+
+    g_Swapped = !g_Swapped;
+}
+
+bool MenuState(u32 state)
+{
+    return state == GameController::StatePaused || state == GameController::StateGallery || state == GameController::StateWaiting;
+}
+
+bool RestartState(u32 state)
+{
+    return state == GameController::StateLoadingLevel || state == GameController::StateNewGame ||
+           state == GameController::StateStartingPlay || state == GameController::StateFadingOut ||
+           state == GameController::StateRestarting || state == GameController::StateGameOver ||
+           state == GameController::StateMainMenu || state == GameController::StateTitle;
 }
 
 void StepPlayers(GameController* controller)
@@ -358,26 +519,98 @@ void StepPlayers(GameController* controller)
         return;
     }
 
+    u32 state = controller->State();
+    if (state == GameController::StateGameOver)
+    {
+        g_GameOver = true;
+    }
+
+    if (RestartState(state))
+    {
+        g_Restarted = true;
+    }
+    else if (state == GameController::StatePlaying && g_Restarted)
+    {
+        // Play goes on after a restart or a load: player 1 plays the primary again, and whoever has lives is back
+        g_Restarted = false;
+        g_Swapped = false;
+        g_PendingSwap = false;
+        if (g_GameOver)
+        {
+            g_GameOver = false;
+            g_SecondLives = GameProgress::StartLives;
+        }
+
+        if (g_SecondLives == 0 && controller->progress.counts.lives > 1 && Platform::System::InfiniteLives() == 0)
+        {
+            // (the first player hands one of its lives over)
+            controller->oleg.AddLives(-1, 0);
+            g_SecondLives = 1;
+        }
+
+        g_Down[0] = false;
+        g_Down[1] = g_SecondLives == 0;
+        g_Wait = SettleFrames;
+        g_HudFrames = HudShowFrames;
+        g_PromptFrames = g_Joined ? 0 : PromptFrames;
+    }
+
+    if (state == GameController::StatePlaying)
+    {
+        if (g_HudFrames > 0)
+        {
+            g_HudFrames--;
+        }
+
+        if (g_PromptFrames > 0)
+        {
+            g_PromptFrames--;
+        }
+    }
+
+    // The menus over the game (pause, options): everyone stays as they are
+    if (MenuState(state))
+    {
+        return;
+    }
+
     InstanceContext* first = FirstInPlay(controller);
     if (!g_Joined)
     {
         if (first != nullptr && GetButtonState(pad, PadStart, true))
         {
             g_Joined = true;
+            g_Swapped = false;
+            g_Down[0] = false;
+            g_Down[1] = false;
             g_Wait = 0;
+            g_PromptFrames = 0;
+            g_HudFrames = HudShowFrames;
         }
 
         return;
     }
 
-    // Leaving: SELECT held (the split's direction is the options page's)
+    // Leaving: SELECT held on the second controller (the first controller plays the primary again)
     g_Selecting = GetButtonState(pad, PadSelect, false) ? g_Selecting + 1 : 0;
-
     if (g_Selecting >= LeaveFrames)
     {
         g_Joined = false;
         g_Selecting = 0;
+        g_Swapped = false;
+        g_PendingSwap = false;
+        g_Down[0] = false;
+        g_Down[1] = false;
         TakeAway();
+        if (first != nullptr)
+        {
+            auto* controls = static_cast<ControlsNode*>(GetGameNode(&first->nodes, NodeControls));
+            if (controls != nullptr && controls->pad != nullptr)
+            {
+                controls->pad = PadOfPlayer(0);
+            }
+        }
+
         StepSplit(controller);
         return;
     }
@@ -385,13 +618,14 @@ void StepPlayers(GameController* controller)
     InstanceContext* second = Second();
     if (first == nullptr)
     {
-        // Out of play (a cutscene, a vehicle, a load, the menus): taken away, made again once play goes on
-        if (second != nullptr && controller->State() != GameController::StatePaused)
+        // Out of play (a cutscene, a vehicle, a load): the secondary taken away, made again once play goes on
+        g_PendingSwap = false;
+        if (second != nullptr)
         {
             TakeAway();
         }
 
-        if (controller->State() != GameController::StatePaused && g_Wait < SettleFrames)
+        if (g_Wait < SettleFrames)
         {
             g_Wait = SettleFrames;
         }
@@ -399,8 +633,32 @@ void StepPlayers(GameController* controller)
         return;
     }
 
+    // The primary is played by its player's controller (the game gives it the first one whenever it hands control back)
+    auto* controls = static_cast<ControlsNode*>(GetGameNode(&first->nodes, NodeControls));
+    if (controls != nullptr && controls->pad != nullptr)
+    {
+        controls->pad = PadOfPlayer(PrimaryPlayer());
+    }
+
+    if (g_PendingSwap)
+    {
+        g_PendingSwap = false;
+        CharacterAgent* survivor = CharacterOf(second);
+        if (second != nullptr && survivor != nullptr && survivor->state.dead == 0 && second->chunk != nullptr)
+        {
+            SwapIntoSecondary(first, second);
+            return;
+        }
+    }
+
     if (second == nullptr)
     {
+        // Out: waiting for a checkpoint (CoopCheckpointReached)
+        if (g_Down[SecondaryPlayer()])
+        {
+            return;
+        }
+
         if (g_Wait > 0)
         {
             g_Wait--;
@@ -420,13 +678,12 @@ void StepPlayers(GameController* controller)
 
     if (character->state.dead != 0)
     {
-        // Its death plays out, then it's made again beside the first
-        CoopSecondPlayerDied();
+        SecondaryDied();
         return;
     }
 
     // It roams where it likes: the chunks load around it too (CoopLoadingFocus); only when its chunk is gone (unloaded under it)
-    // is it made again beside the first
+    // is it made again beside the primary
     if (second->chunk == nullptr)
     {
         TakeAway();
@@ -447,8 +704,114 @@ bool CoopIsSecondPlayer(InstanceContext* instance)
 
 void CoopSecondPlayerDied()
 {
-    TakeAway();
-    g_Wait = DeathFrames;
+    SecondaryDied();
+}
+
+bool CoopPrimaryDying(const void* agent)
+{
+    InstanceContext* second = Second();
+    CharacterAgent* survivor = CharacterOf(second);
+    if (!g_Joined || survivor == nullptr || survivor->state.dead != 0 || second->chunk == nullptr)
+    {
+        return false;
+    }
+
+    GameController* controller = G_GameController;
+    if (controller->State() != GameController::StatePlaying)
+    {
+        return false;
+    }
+
+    CharacterAgent* character = CharacterOf(Primary(controller));
+    if (character == nullptr || character != agent)
+    {
+        return false;
+    }
+
+    // Not dead: it takes the secondary's place at the next frame (StepPlayers), with at least a hit point until then
+    auto* part = static_cast<CreaturePart*>(character->part);
+    if (part->flags.hitPoints == 0)
+    {
+        part->flags.hitPoints = 1;
+    }
+
+    g_PendingSwap = true;
+    return true;
+}
+
+bool CoopPrimaryRestart()
+{
+    if (!g_Joined)
+    {
+        return false;
+    }
+
+    // The secondary lives: no restart, the primary takes its place
+    InstanceContext* second = Second();
+    CharacterAgent* survivor = CharacterOf(second);
+    GameController* controller = G_GameController;
+    if (survivor != nullptr && survivor->state.dead == 0 && second->chunk != nullptr)
+    {
+        CharacterAgent* character = CharacterOf(Primary(controller));
+        if (character != nullptr)
+        {
+            character->state.dead = 0;
+            character->buttons.locked.value = 0;
+            auto* part = static_cast<CreaturePart*>(character->part);
+            if (part->flags.hitPoints == 0)
+            {
+                part->flags.hitPoints = 1;
+            }
+        }
+
+        g_PendingSwap = true;
+        return true;
+    }
+
+    // The last character died: the game restarts its checkpoint, on the first player's lives -- the second player hands one over
+    // when the first has none
+    if (controller->progress.counts.lives == 0 && g_SecondLives > 0)
+    {
+        g_SecondLives--;
+        controller->oleg.AddLives(1, 0);
+    }
+
+    return false;
+}
+
+bool CoopTakesLife(InstanceContext* owner)
+{
+    if (!g_Joined || owner == nullptr)
+    {
+        return false;
+    }
+
+    // The secondary's own death scripts take nothing (SecondaryDied did); the primary's take its player's life
+    if (owner == Second())
+    {
+        return true;
+    }
+
+    if (owner == Primary(G_GameController) && PrimaryPlayer() == 1)
+    {
+        TakeLife(1);
+        return true;
+    }
+
+    return false;
+}
+
+void CoopCheckpointReached()
+{
+    for (u32 player = 0; player < 2; player++)
+    {
+        if (g_Joined && g_Down[player] && LivesOf(player) > 0)
+        {
+            g_Down[player] = false;
+            g_Wait = 20;
+            g_HudFrames = HudShowFrames;
+        }
+    }
 }
 
 bool CoopMakingSecondPlayer()
@@ -468,7 +831,8 @@ void CoopSetViews()
         return;
     }
 
-    SetRendererView(g_SecondRenderer, g_SecondView);
+    // The secondary's camera; with its player out, the primary's (the game's own view)
+    SetRendererView(g_SecondRenderer, g_SecondHasCamera ? g_SecondView : &G_GameController->view);
 }
 
 bool CoopDrawScenes()
@@ -485,7 +849,7 @@ bool CoopDrawScenes()
     // update and the first player's draw follow as in a game played alone (UpdateAndDrawParticles)
     if (g_ParticlesSetUp != 0)
     {
-        g_RenderView = g_SecondView;
+        g_RenderView = g_SecondRenderer->view;
         g_RenderTarget = g_SecondRenderer->target;
         SetUpFrame(g_SecondRenderer->target, 0, 0);
         Platform::Graphics::UseHelperPrograms(Platform::Graphics::CullingPrograms, false);
@@ -560,13 +924,12 @@ void CoopAfterScenes()
 
 void CoopBeforeHud()
 {
-    if (!g_Split)
+    if (g_Split)
     {
-        return;
+        SetUpFrame(g_Whole, 0, 0);
+        g_RenderTarget = g_Whole;
     }
 
-    SetUpFrame(g_Whole, 0, 0);
-    g_RenderTarget = g_Whole;
     CoopQueueHud();
 }
 
@@ -865,35 +1228,46 @@ void CoopSkinMatrices(const GameOGI* ogi, Matrix4x4** matrices)
 
 bool CoopTakesWumpa(InstanceContext* from, u32 count)
 {
-    InstanceContext* second = Second();
-    GameController* controller = G_GameController;
-    InstanceContext* first = controller->progress.Instance(controller->progress.play.character);
-    if (second == nullptr || from == nullptr || from->place == nullptr)
+    if (!g_Joined || from == nullptr || from->place == nullptr)
     {
         return false;
     }
 
-    // The nearer player's: the one the fruit flew to, or that broke the crate
-    Vector4 at = PositionOf(from);
-    Vector4 b = PositionOf(second);
-    f32 dx = b.x - at.x, dy = b.y - at.y, dz = b.z - at.z;
-    f32 toSecond = dx * dx + dy * dy + dz * dz;
-    if (first != nullptr && first->place != nullptr)
+    // The nearer character's player's: the one the fruit flew to, or that broke the crate
+    InstanceContext* second = Second();
+    InstanceContext* first = Primary(G_GameController);
+    u32 player = PrimaryPlayer();
+    if (second != nullptr && second->place != nullptr)
     {
-        Vector4 a = PositionOf(first);
-        dx = a.x - at.x;
-        dy = a.y - at.y;
-        dz = a.z - at.z;
-        if (dx * dx + dy * dy + dz * dz <= toSecond)
+        player = SecondaryPlayer();
+        if (first != nullptr && first->place != nullptr)
         {
-            return false;
+            Vector4 at = PositionOf(from);
+            Vector4 a = PositionOf(first);
+            Vector4 b = PositionOf(second);
+            f32 ax = a.x - at.x, ay = a.y - at.y, az = a.z - at.z;
+            f32 bx = b.x - at.x, by = b.y - at.y, bz = b.z - at.z;
+            if (ax * ax + ay * ay + az * az <= bx * bx + by * by + bz * bz)
+            {
+                player = PrimaryPlayer();
+            }
         }
     }
 
+    if (player == 0)
+    {
+        return false;
+    }
+
+    g_HudFrames = HudShowFrames;
     g_SecondWumpa += count;
     while (g_SecondWumpa >= WumpaPerLife)
     {
         g_SecondWumpa -= WumpaPerLife;
+        if (g_SecondLives < MostLives)
+        {
+            g_SecondLives++;
+        }
     }
 
     return true;
@@ -911,48 +1285,10 @@ bool CoopKeepsDrawn()
     return g_Split && g_StampMark != 0;
 }
 
-void CoopQueueHud()
+namespace
 {
-    if (!g_Split)
-    {
-        return;
-    }
-
-    // (not over the pause menu and its pages: as the first player's count)
-    if (G_GameController->State() != GameController::StatePlaying)
-    {
-        return;
-    }
-
-    // The second player's wumpa fruit at its half's top left: the HUD's own wumpa sprite, the count beside it and a small P2
-    constexpr f32 IconWidth = 0.06f;
-    constexpr f32 IconHeight = 0.08f;
-    GameController* controller = G_GameController;
-    Renderer* renderer = controller->renderer;
-    OLEG* oleg = &controller->oleg;
-    f32 left = g_SplitSideBySide ? 0.5f : 0.0f;
-    f32 top = g_SplitSideBySide ? 0.0f : 0.5f;
-    f32 iconX = left + 0.07f;
-    f32 iconY = top + 0.08f;
-    u32 colour;
-    GetColor(&colour, ColourWhite);
-
-    Sprite* sprite = &oleg->sprites[OLEG::SpriteWumpa];
-    if (sprite->material != nullptr && 0.0f < sprite->texture.width && 0.0f < sprite->texture.height)
-    {
-        Matrix4x4 matrix;
-        InitIdentityMatrix(&matrix);
-        matrix.m[0][0] = IconWidth / sprite->texture.width;
-        matrix.m[1][1] = IconHeight / sprite->texture.height;
-        // (a turned sprite is placed by its middle, another by its corner: SpriteWidget::Draw)
-        matrix.m[3][0] = sprite->turned != 0 ? iconX : iconX - IconWidth * 0.5f;
-        matrix.m[3][1] = sprite->turned != 0 ? iconY : iconY - IconHeight * 0.5f;
-        renderer->colour = colour;
-        QueuePlacedShape(renderer, &matrix, sprite, oleg->hudWumpaSprite.flags.layer);
-    }
-
-    char text[16];
-    u32 n = g_SecondWumpa;
+void NumberText(char* text, u32 n)
+{
     char digits[12];
     s32 count = 0;
     do
@@ -968,16 +1304,98 @@ void CoopQueueHud()
     }
 
     text[at] = 0;
+}
+
+void Text(Renderer* renderer, const char* text, f32 x, f32 y, f32 scale, u32 alignment)
+{
+    renderer->textScale.x = scale;
+    renderer->textScale.y = scale;
+    renderer->textAlignment.value = alignment;
+    QueueText(renderer, text, x, y);
+}
+}
+
+void CoopQueueHud()
+{
+    // (not over the pause menu and its pages: as the first player's counts)
+    GameController* controller = G_GameController;
+    if (controller->State() != GameController::StatePlaying)
+    {
+        return;
+    }
+
+    Renderer* renderer = controller->renderer;
+    u32 colour;
+    GetColor(&colour, ColourWhite);
     renderer->font = &controller->font;
     renderer->colour = colour;
-    renderer->textScale.x = 1.0f;
-    renderer->textScale.y = 1.0f;
-    renderer->textAlignment.value = TextAlignment::MiddleLeft;
-    QueueText(renderer, text, iconX + 0.05f, iconY);
-    renderer->textScale.x = 0.5f;
-    renderer->textScale.y = 0.5f;
-    renderer->textAlignment.value = TextAlignment::Centred;
-    QueueText(renderer, "P2", iconX, iconY + 0.075f);
+    if (!g_Joined)
+    {
+        // The second controller's way in, for a while after play starts
+        if (g_PromptFrames > 0)
+        {
+            Text(renderer, "player 2  press start to join", 0.5f, 0.93f, 0.5f, TextAlignment::Centred);
+        }
+
+        return;
+    }
+
+    if (!g_Split)
+    {
+        return;
+    }
+
+    // The second player's half: its corner, its size
+    constexpr f32 IconWidth = 0.06f;
+    constexpr f32 IconHeight = 0.08f;
+    OLEG* oleg = &controller->oleg;
+    f32 left = g_SplitSideBySide ? 0.5f : 0.0f;
+    f32 top = g_SplitSideBySide ? 0.0f : 0.5f;
+    f32 width = g_SplitSideBySide ? 0.5f : 1.0f;
+    f32 height = g_SplitSideBySide ? 1.0f : 0.5f;
+    f32 iconX = left + 0.07f;
+    f32 iconY = top + 0.08f;
+    // P2 always; the wumpa fruit (the HUD's own sprite, the count beside it) and the lives for a while after they change, as
+    // the first player's
+    Text(renderer, "P2", iconX, iconY + 0.075f, 0.5f, TextAlignment::Centred);
+    if (g_HudFrames > 0)
+    {
+        Sprite* sprite = &oleg->sprites[OLEG::SpriteWumpa];
+        if (sprite->material != nullptr && 0.0f < sprite->texture.width && 0.0f < sprite->texture.height)
+        {
+            Matrix4x4 matrix;
+            InitIdentityMatrix(&matrix);
+            matrix.m[0][0] = IconWidth / sprite->texture.width;
+            matrix.m[1][1] = IconHeight / sprite->texture.height;
+            // (a turned sprite is placed by its middle, another by its corner: SpriteWidget::Draw)
+            matrix.m[3][0] = sprite->turned != 0 ? iconX : iconX - IconWidth * 0.5f;
+            matrix.m[3][1] = sprite->turned != 0 ? iconY : iconY - IconHeight * 0.5f;
+            renderer->colour = colour;
+            QueuePlacedShape(renderer, &matrix, sprite, oleg->hudWumpaSprite.flags.layer);
+        }
+
+        char text[16];
+        NumberText(text, g_SecondWumpa);
+        Text(renderer, text, iconX + 0.05f, iconY, 1.0f, TextAlignment::MiddleLeft);
+        NumberText(text, g_SecondLives);
+        Text(renderer, text, left + width - 0.07f, iconY, 1.0f, TextAlignment::MiddleRight);
+        Text(renderer, "lives", left + width - 0.07f, iconY + 0.075f, 0.5f, TextAlignment::MiddleRight);
+    }
+
+    // A player who is out: why its half shows the other's game
+    for (u32 player = 0; player < 2; player++)
+    {
+        if (!g_Down[player])
+        {
+            continue;
+        }
+
+        f32 x = (player == 0 ? 0.0f : left) + width * 0.5f;
+        f32 y = (player == 0 ? 0.0f : top) + height * 0.82f;
+        const char* why = LivesOf(player) > 0 ? "out  back at the next checkpoint" : "out of lives";
+        Text(renderer, player == 0 ? "P1" : "P2", x, y - 0.06f, 0.6f, TextAlignment::Centred);
+        Text(renderer, why, x, y, 0.5f, TextAlignment::Centred);
+    }
 }
 
 u32 CoopInDrawnCell(InstanceContext* instance, u32 inView)

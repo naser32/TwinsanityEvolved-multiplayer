@@ -117,3 +117,11 @@ enum CoopOption : u32
     CoopOptionCount,
 };
 s32 CoopOptionValue(u32 option);
+// The primary (the game's played character) about to die while the secondary lives: it does not (its player is out, the
+// survivor plays it on from the secondary's place); and its checkpoint restart asked for: not made while the secondary lives
+bool CoopPrimaryDying(const void* agent);
+bool CoopPrimaryRestart();
+// A life a character's own script takes: taken by the mod (true) when it is the second player's
+bool CoopTakesLife(InstanceContext* owner);
+// A checkpoint was set: a player who is out comes back
+void CoopCheckpointReached();

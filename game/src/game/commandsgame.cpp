@@ -95,6 +95,11 @@ void RestartFromCheckpointCommand::Execute(TimeClock*, BehaviourRunner* runner, 
         return;
     }
 
+    if (CoopPrimaryRestart())
+    {
+        return;
+    }
+
     G_GameController->RestartFromCheckpoint();
 }
 
@@ -319,6 +324,12 @@ void AddLivesCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLeve
     GameController* controller = G_GameController;
     InstanceContext* owner = runner->agentNode->owner;
     InstanceContext* played = controller->progress.Instance(controller->progress.play.character);
+    // TwinsanityEvolved: two players -- a life the second player's character loses is its own (game/coop.h)
+    if (lives < 0 && CoopTakesLife(owner))
+    {
+        return;
+    }
+
     if (lives > 0 || owner == played)
     {
         // TwinsanityEvolved: with the platform's infinite lives on, a life taken is not taken -- the lives are shown as
