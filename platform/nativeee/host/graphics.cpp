@@ -1472,6 +1472,16 @@ ps2e_draw_state Viewed(const ps2e_draw_state& in) {
     return s;
 }
 
+// A build's alternate state (set by its maker after ReserveDeferred) held to the same half as its state
+ps2e_draw_state AltState(const DeferredBuild& b) {
+    ps2e_draw_state s = b.alt_state;
+    if (b.viewed) {
+        s.scissor_x0 = b.state.scissor_x0; s.scissor_y0 = b.state.scissor_y0;
+        s.scissor_x1 = b.state.scissor_x1; s.scissor_y1 = b.state.scissor_y1;
+    }
+    return s;
+}
+
 Draw& OpenDraw(uint32_t bucket, const ps2e_draw_state& given, bool copy_frame = false) {
     const ps2e_draw_state state = Viewed(given);   // (before the join: a half's draw never joins the other half's)
     auto& b = g.buckets[bucket < TE_GFX_BUCKET_COUNT ? bucket : TE_GFX_BUCKET_UI];
@@ -1985,7 +1995,8 @@ DeferredBuild& ReserveDeferred(uint32_t bucket, const ps2e_draw_state& state) {
     if (g.tag_has_transform) d.transform = g.tag_transform;
     if (g.deferred_used == g.deferred.size()) g.deferred.push_back(std::make_unique<DeferredBuild>());
     DeferredBuild& build = *g.deferred[g.deferred_used++];
-    build.state = state;
+    build.state = d.state;   // (the split screen's half: Viewed)
+    build.viewed = g_view_scissor.on;
     build.particles = false;
     build.verts.clear();
     build.segments.clear();
@@ -2644,7 +2655,7 @@ void ExpandBucket(Gfx::Bucket* buckets, int b) {
                 idx.push_back(r);
                 continue;
             }
-            const ps2e_draw_state& state = k < build.alternate.size() && build.alternate[k] ? build.alt_state : build.state;
+            const ps2e_draw_state state = k < build.alternate.size() && build.alternate[k] ? AltState(build) : build.state;
             const ps2e_draw_vertex* const first = build.verts.data() + vat;
             vat += count;
             if (!idx.empty() && JoinsDraw(&at(idx.back()), state, false, d.tag, interp)) {
@@ -2758,7 +2769,7 @@ void ExpandBucket(Gfx::Bucket* buckets, int b) {
                     o.has_transform = false;
                     continue;
                 }
-                const ps2e_draw_state& state = k < build.alternate.size() && build.alternate[k] ? build.alt_state : build.state;
+                const ps2e_draw_state state = k < build.alternate.size() && build.alternate[k] ? AltState(build) : build.state;
                 const auto first = build.verts.begin() + std::ptrdiff_t(at), end = first + std::ptrdiff_t(count);
                 at += count;
                 if (Joins(out, state, false, d.tag, interp)) {

@@ -187,6 +187,8 @@ struct DeferredBuild {
     // A build whose segments take one of two states (the shadow volumes' counting up and down): alt_state for the
     // segments whose flag in `alternate` is set (none when the vector is empty)
     ps2e_draw_state alt_state{};
+    // Whether it was reserved on a split screen's half (graphics.cpp Viewed): its alt_state held to the same half
+    bool viewed = false;
     std::vector<uint8_t> alternate;
     // The Vita's chunked native draws (a clipped instance's part drawn chunk by chunk): a segment whose count is 0 stands
     // for the next of `meshes` -- a native mesh range drawn in its place under `state` (no vertices here)
