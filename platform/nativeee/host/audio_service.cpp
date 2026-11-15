@@ -236,6 +236,8 @@ protected:
     }
 };
 
+void AudioService::Quiet(bool on) { ring_->SetPadWithTail(!on); }
+
 AudioService::AudioService()
     : ring_(std::make_unique<ps2r::platform::sdl::AudioPullRing>()),
       sink_(std::make_unique<ps2r::platform::sdl::SdlAudioSink>()) {
@@ -1196,6 +1198,7 @@ namespace te::audio {
 void Configure(bool open_device) { Service().Configure(open_device); }
 void SetBoundaryHz(uint32_t hz) { Service().SetBoundaryHz(hz); }
 void OnBoundary() { Service().OnBoundary(); }
+void Quiet(bool on) { Service().Quiet(on); }
 RingHealth Health() {
     const auto c = Service().Count();
     RingHealth h;

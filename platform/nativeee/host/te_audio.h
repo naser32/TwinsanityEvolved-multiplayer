@@ -17,6 +17,8 @@ void OnBoundary();
 // The device ring's health for the health checks (dropped frames and underrun events since the device opened).
 struct RingHealth { uint64_t pushed = 0, pulled = 0, dropped = 0, underruns = 0, overruns = 0, padded = 0; bool device = false; };
 RingHealth Health();
+// Silence from the device while the game thread waits on something long (te_netplay.h), instead of the last tail repeated
+void Quiet(bool on);
 // The owner's census (audio, stream, movie counters) as lines on fd 2: at exit and from the watchdog (write(2)
 // only: no allocation, no stdio lock).
 void Report();

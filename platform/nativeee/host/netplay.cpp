@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "savestate.h"
+#include "te_audio.h"
 #include "te_host.h"
 #include "te_input.h"
 #include "te_mods.h"
@@ -280,6 +281,154 @@ bool Unpack(const uint8_t* s, size_t n, std::vector<uint8_t>& out, size_t size) 
     return out.size() == size;
 }
 
+// A state as its difference from the last one both machines hold: runs copied from that one wherever they now sit (the
+// state's sections move when one changes size, so the two are not compared place for place) and the bytes found nowhere in it.
+// Ops: 0 + u32 count + the bytes; 1 + u32 offset + u32 count (from the base); 2 + u32 offset + u32 count + the bytes XOR the base's.
+constexpr size_t kPiece = 1024;
+
+void PutWord(std::vector<uint8_t>& out, uint32_t v) {
+    const size_t at = out.size();
+    out.resize(at + 4);
+    std::memcpy(out.data() + at, &v, 4);
+}
+
+void Difference(const std::vector<uint8_t>& now, const std::vector<uint8_t>& base, std::vector<uint8_t>& out) {
+    out.clear();
+    out.reserve(now.size() / 8 + 64);
+    const uint8_t* s = now.data();
+    const size_t n = now.size();
+    auto literal = [&](size_t from, size_t to) {
+        if (to <= from) return;
+        out.push_back(0);
+        PutWord(out, uint32_t(to - from));
+        out.insert(out.end(), s + from, s + to);
+    };
+    const size_t pieces = base.size() / kPiece;
+    if (pieces == 0 || n < kPiece) { literal(0, n); return; }
+    // the base's pieces by their rolling sum
+    constexpr uint32_t kSlots = 1u << 18;
+    std::vector<uint32_t> head(kSlots, 0xFFFFFFFFu), next(pieces, 0xFFFFFFFFu), sum(pieces);
+    auto sum_of = [](const uint8_t* p, uint32_t& a, uint32_t& b) {
+        a = 0; b = 0;
+        for (size_t i = 0; i < kPiece; i++) { a += p[i]; b += a; }
+        a &= 0xFFFF; b &= 0xFFFF;
+    };
+    auto slot_of = [](uint32_t v) { return (v * 2654435761u) >> 14; };
+    for (size_t k = pieces; k-- > 0;) {   // (backwards: a chain's first piece is the base's first of that sum)
+        uint32_t a, b;
+        sum_of(base.data() + k * kPiece, a, b);
+        sum[k] = a | b << 16;
+        const uint32_t slot = slot_of(sum[k]);
+        next[k] = head[slot];
+        head[slot] = uint32_t(k);
+    }
+    // Piece by piece: while the last place found in the base still mostly agrees, the piece goes as its XOR with the base
+    // there (a memory's scattered changes: mostly zeros, which pack to nothing); when it stops agreeing, the next piece the
+    // base holds whole is looked for, wherever it is, and the bytes before it go as they are
+    size_t i = 0;
+    bool placed = false;
+    long long shift = 0;          // base offset - offset here, of the place in use
+    size_t run_count_at = 0;      // the open XOR op's count word (0: none open)
+    size_t run_end = 0;           // ... and the base offset it has reached
+    while (i < n) {
+        const size_t piece = std::min(kPiece, n - i);
+        if (placed) {
+            const long long at = (long long)i + shift;
+            if (at >= 0 && size_t(at) + piece <= base.size()) {
+                const uint8_t* q = base.data() + at;
+                size_t same = 0;
+                for (size_t k = 0; k < piece; k++) same += s[i + k] == q[k];
+                if (same * 2 >= piece) {
+                    if (run_count_at == 0 || run_end != size_t(at)) {
+                        out.push_back(2);
+                        PutWord(out, uint32_t(at));
+                        run_count_at = out.size();
+                        PutWord(out, 0);
+                    }
+                    uint32_t count;
+                    std::memcpy(&count, out.data() + run_count_at, 4);
+                    count += uint32_t(piece);
+                    std::memcpy(out.data() + run_count_at, &count, 4);
+                    const size_t to = out.size();
+                    out.resize(to + piece);
+                    for (size_t k = 0; k < piece; k++) out[to + k] = s[i + k] ^ q[k];
+                    run_end = size_t(at) + piece;
+                    i += piece;
+                    continue;
+                }
+            }
+            placed = false;
+        }
+        run_count_at = 0;
+        // the next piece the base holds whole, from here on
+        size_t j = i;
+        size_t found = SIZE_MAX;
+        if (j + kPiece <= n) {
+            uint32_t a, b;
+            sum_of(s + j, a, b);
+            for (;;) {
+                const uint32_t v = a | b << 16;
+                int tries = 0;
+                for (uint32_t k = head[slot_of(v)]; k != 0xFFFFFFFFu && tries < 6; k = next[k]) {
+                    if (sum[k] != v) continue;
+                    ++tries;
+                    if (std::memcmp(s + j, base.data() + size_t(k) * kPiece, kPiece) == 0) { found = size_t(k) * kPiece; break; }
+                }
+                if (found != SIZE_MAX || j + kPiece >= n) break;
+                const uint32_t gone = s[j], come = s[j + kPiece];
+                a = (a - gone + come) & 0xFFFF;
+                b = (b - uint32_t(kPiece) * gone + a) & 0xFFFF;
+                ++j;
+            }
+        }
+        if (found == SIZE_MAX) { literal(i, n); break; }
+        literal(i, j);
+        i = j;
+        shift = (long long)found - (long long)j;
+        placed = true;
+    }
+}
+
+bool Apply(const uint8_t* p, size_t n, const std::vector<uint8_t>& base, std::vector<uint8_t>& out, size_t size) {
+    out.clear();
+    out.reserve(size);
+    size_t i = 0;
+    while (i < n) {
+        const uint8_t op = p[i++];
+        if (op == 0) {
+            if (n - i < 4) return false;
+            uint32_t count;
+            std::memcpy(&count, p + i, 4);
+            i += 4;
+            if (count > n - i || out.size() + count > size) return false;
+            out.insert(out.end(), p + i, p + i + count);
+            i += count;
+        } else if (op == 1) {
+            if (n - i < 8) return false;
+            uint32_t offset, count;
+            std::memcpy(&offset, p + i, 4);
+            std::memcpy(&count, p + i + 4, 4);
+            i += 8;
+            if (offset > base.size() || count > base.size() - offset || out.size() + count > size) return false;
+            out.insert(out.end(), base.begin() + long(offset), base.begin() + long(offset) + long(count));
+        } else if (op == 2) {
+            if (n - i < 8) return false;
+            uint32_t offset, count;
+            std::memcpy(&offset, p + i, 4);
+            std::memcpy(&count, p + i + 4, 4);
+            i += 8;
+            if (offset > base.size() || count > base.size() - offset || count > n - i || out.size() + count > size) return false;
+            const size_t to = out.size();
+            out.resize(to + count);
+            for (uint32_t k = 0; k < count; k++) out[to + k] = base[offset + k] ^ p[i + k];
+            i += count;
+        } else {
+            return false;
+        }
+    }
+    return out.size() == size;
+}
+
 uint64_t Hash(const uint8_t* s, size_t n) {
     uint64_t h = 0x9E3779B97F4A7C15ull ^ n;
     size_t i = 0;
@@ -294,7 +443,7 @@ uint64_t Hash(const uint8_t* s, size_t n) {
 }
 
 // ---- the protocol -------------------------------------------------------------------------------------------------------
-constexpr uint32_t kProtocol = 1;
+constexpr uint32_t kProtocol = 2;
 constexpr uint16_t kPort = 26950;
 enum Message : uint8_t { MsgHello = 1, MsgPing, MsgPong, MsgSync, MsgState, MsgReady, MsgFail, MsgBye, MsgInput, MsgHash, MsgMemory, MsgBlocks };
 constexpr size_t kMostMessage = 512u * 1024u * 1024u;
@@ -354,7 +503,8 @@ struct Global {
     std::vector<uint64_t> blocks, their_blocks;   // of my_memory_frame / their_blocks_frame
     uint32_t their_blocks_frame = 0;
     uint32_t memory_checks = 0, memory_differed = 0;
-    bool resynced = false;
+    double wait_sum_ms = 0, wait_max_ms = 0;   // the other's pad waited for, since the last line of the log
+    uint32_t wait_frames = 0, wait_long = 0;
     // the screen
     std::string notice, code;
     int notice_frames = 0;
@@ -386,6 +536,8 @@ void Texts(std::vector<texts::Line>& out) {
 void Enter(State s) {
     g.state = s;
     g.since = NowMs();
+    // (a state on its way: the game thread is about to wait -- silence from the device, not its last sound repeated)
+    audio::Quiet(s == State::Saving || s == State::Loading || (s == State::Waiting && g.session));
 }
 
 void DropPeer() {
@@ -522,25 +674,27 @@ void SendState() {
         return;
     }
     const bool delta = g.peer_has_base && !g.base.empty();
-    std::vector<uint8_t> body = raw;
-    if (delta) {
-        const size_t n = std::min(body.size(), g.base.size());
-        for (size_t i = 0; i < n; i++) body[i] ^= g.base[i];
-    }
     std::vector<uint8_t> packed;
-    Pack(body.data(), body.size(), packed);
-    body.clear();
-    body.shrink_to_fit();
+    uint32_t body_size = uint32_t(raw.size());
+    if (delta) {
+        std::vector<uint8_t> body;
+        Difference(raw, g.base, body);
+        body_size = uint32_t(body.size());
+        Pack(body.data(), body.size(), packed);
+    } else {
+        Pack(raw.data(), raw.size(), packed);
+    }
     // the pads' delay from the round trip: half of it and a field to spare, in fields
     const double field = 1000.0 / double(GetSettings().field_hz ? GetSettings().field_hz : 60);
     const double rtt = g.rtt_ms < 0 ? 60.0 : g.rtt_ms;
     const uint32_t delay = uint32_t(std::min(12.0, std::max(2.0, std::ceil((rtt * 0.5 + 6.0) / field) + 1.0)));
     g.delay = delay;
-    std::vector<uint8_t> head(8);
+    std::vector<uint8_t> head(12);
     const uint32_t raw_size = uint32_t(raw.size());
     std::memcpy(head.data(), &raw_size, 4);
     head[4] = delta ? 1 : 0;
     head[5] = uint8_t(delay);
+    std::memcpy(head.data() + 8, &body_size, 4);
     std::fprintf(stderr, "[twinsanityevolved] online: the state %.1f MB sent as %.1f MB (%s)\n", raw.size() / 1048576.0, packed.size() / 1048576.0,
                  delta ? "its difference from the last" : "whole");
     uint8_t lead[5];
@@ -577,20 +731,20 @@ void SendState() {
 
 // The joiner: a state arrived
 void TakeState(const uint8_t* p, size_t n) {
-    if (n < 8) { Lost("a broken state arrived"); return; }
-    uint32_t raw_size;
+    if (n < 12) { Lost("a broken state arrived"); return; }
+    uint32_t raw_size, body_size;
     std::memcpy(&raw_size, p, 4);
+    std::memcpy(&body_size, p + 8, 4);
     const bool delta = p[4] != 0;
     g.delay = std::min<uint32_t>(12, std::max<uint32_t>(1, p[5]));
-    std::vector<uint8_t> raw;
-    if (raw_size > kMostMessage || !Unpack(p + 8, n - 8, raw, raw_size) || (delta && g.base.empty())) {
+    std::vector<uint8_t> raw, body;
+    bool ok = raw_size <= kMostMessage && body_size <= kMostMessage && !(delta && g.base.empty());
+    if (ok && delta) ok = Unpack(p + 12, n - 12, body, body_size) && Apply(body.data(), body.size(), g.base, raw, raw_size);
+    else if (ok) ok = Unpack(p + 12, n - 12, raw, raw_size);
+    if (!ok) {
         Send(MsgFail, "unpack", 6);
         Lost("the game's state arrived broken");
         return;
-    }
-    if (delta) {
-        const size_t m = std::min(raw.size(), g.base.size());
-        for (size_t i = 0; i < m; i++) raw[i] ^= g.base[i];
     }
     if (!WriteFile(g.state_path, raw)) {
         Send(MsgFail, "write", 5);
@@ -1031,6 +1185,7 @@ Pads::Sample Pad0(const Pads::Sample& local) {
     }
     // the other's pad for this boundary: the game waits for it
     const double began = NowMs();
+    bool quiet = false;
     for (;;) {
         Pump(false);
         if (g.state != State::Running) {   // the connection went, or the host sends its state again
@@ -1049,7 +1204,25 @@ Pads::Sample Pad0(const Pads::Sample& local) {
             return local;
         }
         WaitSocket(g.peer, false, waited > 100.0 ? 20 : 2);
-        if (waited > 250.0) input::KeepAlive();
+        if (waited > 250.0) {
+            input::KeepAlive();
+            audio::Quiet(true);
+            quiet = true;
+        }
+    }
+    if (quiet) audio::Quiet(false);
+    {
+        // how long the other's pads were waited for (the log: where a session's stops come from -- the line or the game)
+        const double waited = NowMs() - began;
+        g.wait_sum_ms += waited;
+        g.wait_max_ms = std::max(g.wait_max_ms, waited);
+        if (waited > 20.0) ++g.wait_long;
+        if (++g.wait_frames >= 1800) {
+            std::fprintf(stderr, "[twinsanityevolved] online: the other's pad waited for %.2f ms a boundary, at most %.0f ms, %u waits over 20 ms in %u boundaries\n",
+                         g.wait_sum_ms / g.wait_frames, g.wait_max_ms, g.wait_long, g.wait_frames);
+            g.wait_sum_ms = g.wait_max_ms = 0;
+            g.wait_frames = g.wait_long = 0;
+        }
     }
     const Wire mine = g.mine[f % kRing], theirs = g.theirs[f % kRing];
     g.frame = f + 1;
