@@ -25,6 +25,9 @@ int LocalPad();
 // session, the second controller as before)
 Pads::Sample Pad0(const Pads::Sample& local);
 bool Pad1(Pads::Sample& out);
+// The game's own account of itself after each of its frames (where the players are, the lives, the random seed: the
+// two-player mod's, through the graphics seam's marker): what the two machines compare, and send the state again over
+void GameHash(uint64_t hash);
 // The runner's answers for the states this module asked for (runner/main.cpp, beside te::savestate_keys')
 void Saved(const std::string& path, bool ok, const std::string& error);
 void Loaded(const std::string& path, bool ok, const std::string& error);

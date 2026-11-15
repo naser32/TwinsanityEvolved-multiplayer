@@ -6410,6 +6410,11 @@ void ps2e_graphics_start_frame(ps2e_u32 frame) {
         g_online_view = f->green;
         return;
     }
+    if (f->width == 0 && f->height == 0 && f->red == 0xC1 && f->blue == 0x0F && !f->clearColor && !f->clearDepth) {
+        // ... and its account of itself for the two machines to compare (coop.cpp TellState)
+        te::netplay::GameHash(uint64_t(uint32_t(f->x)) | uint64_t(uint32_t(f->y)) << 32);
+        return;
+    }
     g.frame = *f;
     g.have_frame = true;
     g.start_frames++;

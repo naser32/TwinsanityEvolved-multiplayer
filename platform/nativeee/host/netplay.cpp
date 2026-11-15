@@ -51,6 +51,7 @@ namespace te::netplay {
 void Install(const std::string&) {}
 bool Lockstep() { return false; }
 int LocalPad() { return -1; }
+void GameHash(uint64_t) {}
 Pads::Sample Pad0(const Pads::Sample& local) { return local; }
 bool Pad1(Pads::Sample&) { return false; }
 void Saved(const std::string&, bool, const std::string&) {}
@@ -295,7 +296,7 @@ uint64_t Hash(const uint8_t* s, size_t n) {
 // ---- the protocol -------------------------------------------------------------------------------------------------------
 constexpr uint32_t kProtocol = 1;
 constexpr uint16_t kPort = 26950;
-enum Message : uint8_t { MsgHello = 1, MsgPing, MsgPong, MsgSync, MsgState, MsgReady, MsgFail, MsgBye, MsgInput, MsgHash };
+enum Message : uint8_t { MsgHello = 1, MsgPing, MsgPong, MsgSync, MsgState, MsgReady, MsgFail, MsgBye, MsgInput, MsgHash, MsgMemory, MsgBlocks };
 constexpr size_t kMostMessage = 512u * 1024u * 1024u;
 
 enum class State {
@@ -310,7 +311,9 @@ enum class State {
 };
 
 constexpr uint32_t kRing = 256;
-constexpr uint32_t kHashEvery = 600;          // boundaries between two comparisons of the memory's hash (10 s)
+constexpr uint32_t kHashEvery = 120;          // boundaries between two comparisons of the game's own account of itself (2 s)
+constexpr uint32_t kMemoryEvery = 1800;       // ... and of the whole memory's hash (30 s): logged, never a reason to send the state
+constexpr size_t kBlock = 65536;              // the memory's hash is of its blocks' hashes (which blocks differ: the log)
 constexpr double kResyncGapMs = 20000.0;      // the least time between two states sent for a hash that differed
 constexpr double kInputTimeoutMs = 15000.0;   // the other's pad not arriving for this long: the session is over
 constexpr int kNoticeFrames = 60 * 8;
@@ -345,6 +348,13 @@ struct Global {
     uint32_t my_hash_frame = 0, their_hash_frame = 0;
     uint64_t my_hash = 0, their_hash = 0;
     uint32_t checks = 0, differed = 0;
+    uint64_t game_hash = 0;      // the game's account of itself, as of its last frame (GameHash)
+    uint32_t my_memory_frame = 0, their_memory_frame = 0;
+    uint64_t my_memory = 0, their_memory = 0;
+    std::vector<uint64_t> blocks, their_blocks;   // of my_memory_frame / their_blocks_frame
+    uint32_t their_blocks_frame = 0;
+    uint32_t memory_checks = 0, memory_differed = 0;
+    bool resynced = false;
     // the screen
     std::string notice, code;
     int notice_frames = 0;
@@ -482,10 +492,13 @@ void StartRunning() {
     g.theirs_upto = g.delay;   // (the first `delay` boundaries: both pads neutral on both machines)
     for (uint32_t i = 0; i < kRing; i++) { g.mine[i] = Wire{}; g.theirs[i] = Wire{}; }
     g.my_hash_frame = g.their_hash_frame = 0;
+    g.my_memory_frame = g.their_memory_frame = g.their_blocks_frame = 0;
+    const bool again = g.session;
     g.session = true;
     g.last_sync = NowMs();
     Enter(State::Running);
-    Notice(g.host ? "online: player 2 is in~player 2: press start to join" : "online: you are in~press start to join as player 2");
+    if (again) Notice("online: back in step", 60 * 2);
+    else Notice(g.host ? "online: player 2 is in~player 2: press start to join" : "online: you are in~press start to join as player 2");
     std::fprintf(stderr, "[twinsanityevolved] online: lockstep from here, the pads %u boundaries late (round trip %.0f ms)\n", g.delay, g.rtt_ms);
 }
 
@@ -496,7 +509,7 @@ void BeginSync() {
     g.want_sync = false;
     savestate::RequestSave(g.state_path);
     Enter(State::Saving);
-    Notice(g.session ? "online: the two games differ~sending the game again" : "online: player 2 is joining~sending the game");
+    Notice(g.session ? "online: out of step~one moment" : "online: player 2 is joining~sending the game");
 }
 
 bool Pump(bool wait_ready);
@@ -588,7 +601,7 @@ void TakeState(const uint8_t* p, size_t n) {
     g.loaded = 0;
     savestate::RequestLoad(g.state_path);
     Enter(State::Loading);
-    Notice("online: loading the host's game");
+    if (!g.session) Notice("online: loading the host's game");
 }
 
 void CompareHashes() {
@@ -596,10 +609,57 @@ void CompareHashes() {
     ++g.checks;
     const bool same = g.my_hash == g.their_hash;
     if (!same) ++g.differed;
-    std::fprintf(stderr, "[twinsanityevolved] online: boundary %u of the session: the two memories %s (%u checks, %u differed)\n", g.my_hash_frame,
-                 same ? "agree" : "DIFFER", g.checks, g.differed);
+    if (!same || g.checks % 30 == 1)
+        std::fprintf(stderr, "[twinsanityevolved] online: boundary %u of the session: the two games %s (%u checks, %u differed)\n", g.my_hash_frame,
+                     same ? "agree" : "DIFFER", g.checks, g.differed);
     g.my_hash_frame = g.their_hash_frame = 0;
     if (!same && g.host && NowMs() - g.last_sync > kResyncGapMs) g.want_sync = true;
+}
+
+// The whole memory, block by block: for the log only (what differs between two machines whose games agree is the host
+// side's own -- handles, addresses -- or a drift the game's account does not see yet)
+void HashMemory() {
+    const uint8_t* ram = GuestMemory();
+    const size_t size = GuestMemorySize();
+    g.blocks.clear();
+    for (size_t at = 0; at < size; at += kBlock) g.blocks.push_back(Hash(ram + at, std::min(kBlock, size - at)));
+    g.my_memory = Hash(reinterpret_cast<const uint8_t*>(g.blocks.data()), g.blocks.size() * sizeof(uint64_t));
+}
+
+void CompareBlocks() {
+    if (g.their_blocks_frame == 0 || g.their_blocks_frame != g.my_memory_frame || g.their_blocks.size() != g.blocks.size()) return;
+    std::string ranges;
+    size_t count = 0, run = 0;
+    for (size_t i = 0; i <= g.blocks.size(); i++) {
+        const bool differs = i < g.blocks.size() && g.blocks[i] != g.their_blocks[i];
+        if (differs) { if (run == 0) run = i + 1; ++count; continue; }
+        if (run != 0) {
+            char text[64];
+            std::snprintf(text, sizeof text, " %06zX-%06zX", (run - 1) * kBlock, i * kBlock);
+            if (ranges.size() < 1500) ranges += text;
+            run = 0;
+        }
+    }
+    std::fprintf(stderr, "[twinsanityevolved] online: memory at boundary %u: %zu of %zu blocks differ:%s\n", g.my_memory_frame, count, g.blocks.size(),
+                 ranges.c_str());
+    g.their_blocks_frame = 0;
+}
+
+void CompareMemory() {
+    if (g.my_memory_frame == 0 || g.my_memory_frame != g.their_memory_frame) return;
+    ++g.memory_checks;
+    const bool same = g.my_memory == g.their_memory;
+    if (!same) ++g.memory_differed;
+    std::fprintf(stderr, "[twinsanityevolved] online: boundary %u of the session: the two memories %s (%u checks, %u differed)\n", g.my_memory_frame,
+                 same ? "agree" : "differ", g.memory_checks, g.memory_differed);
+    g.their_memory_frame = 0;
+    if (!same && g.memory_differed <= 4 && !g.blocks.empty()) {
+        std::vector<uint8_t> p(4 + g.blocks.size() * sizeof(uint64_t));
+        std::memcpy(p.data(), &g.my_memory_frame, 4);
+        std::memcpy(p.data() + 4, g.blocks.data(), g.blocks.size() * sizeof(uint64_t));
+        Send(MsgBlocks, p.data(), p.size());
+        CompareBlocks();
+    }
 }
 
 // One whole message. True: the answer SendState waits for (the joiner is ready)
@@ -626,7 +686,7 @@ bool Handle(uint8_t type, const uint8_t* p, size_t n) {
     case MsgSync:
         if (!g.host) {
             Enter(State::Waiting);
-            Notice(g.session ? "online: the two games differ~receiving the host's game again" : "online: receiving the host's game", 60 * 120);
+            Notice(g.session ? "online: out of step~one moment" : "online: receiving the host's game", 60 * 120);
         }
         return false;
     case MsgState:
@@ -657,6 +717,21 @@ bool Handle(uint8_t type, const uint8_t* p, size_t n) {
             std::memcpy(&g.their_hash_frame, p, 4);
             std::memcpy(&g.their_hash, p + 4, 8);
             CompareHashes();
+        }
+        return false;
+    case MsgMemory:
+        if (n >= 12 && g.state == State::Running) {
+            std::memcpy(&g.their_memory_frame, p, 4);
+            std::memcpy(&g.their_memory, p + 4, 8);
+            CompareMemory();
+        }
+        return false;
+    case MsgBlocks:
+        if (n >= 4 && (n - 4) % sizeof(uint64_t) == 0 && g.state == State::Running) {
+            std::memcpy(&g.their_blocks_frame, p, 4);
+            g.their_blocks.resize((n - 4) / sizeof(uint64_t));
+            std::memcpy(g.their_blocks.data(), p + 4, n - 4);
+            CompareBlocks();
         }
         return false;
     default: return false;
@@ -901,6 +976,8 @@ bool Lockstep() { return g.session || g.state == State::Loading; }
 
 int LocalPad() { return g.session ? (g.host ? 0 : 1) : -1; }
 
+void GameHash(uint64_t hash) { g.game_hash = hash; }
+
 Pads::Sample Pad0(const Pads::Sample& local) {
     g.have_pad1 = false;
     if (g.state == State::Idle) return local;
@@ -935,13 +1012,22 @@ Pads::Sample Pad0(const Pads::Sample& local) {
         if (!Send(MsgInput, p, sizeof p)) return local;
     }
     if (f != 0 && f % kHashEvery == 0) {
-        g.my_hash = Hash(GuestMemory(), GuestMemorySize());
+        g.my_hash = g.game_hash;
         g.my_hash_frame = f;
         uint8_t p[12];
         std::memcpy(p, &f, 4);
         std::memcpy(p + 4, &g.my_hash, 8);
         if (!Send(MsgHash, p, sizeof p)) return local;
         CompareHashes();
+    }
+    if (f != 0 && f % kMemoryEvery == 0) {
+        HashMemory();
+        g.my_memory_frame = f;
+        uint8_t p[12];
+        std::memcpy(p, &f, 4);
+        std::memcpy(p + 4, &g.my_memory, 8);
+        if (!Send(MsgMemory, p, sizeof p)) return local;
+        CompareMemory();
     }
     // the other's pad for this boundary: the game waits for it
     const double began = NowMs();

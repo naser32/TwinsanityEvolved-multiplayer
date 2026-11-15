@@ -331,6 +331,49 @@ void MarkView(u32 view)
     Platform::Graphics::StartFrame(mark);
 }
 
+// The game's account of itself after this frame, for the two machines to compare: where both players are, the game's state,
+// the lives, the random seed (when two games fall out of step these differ within moments; the host's is then sent again)
+void TellState(GameController* controller)
+{
+    u32 a = 2166136261u;
+    u32 b = 0x9E3779B9u;
+    auto mix = [&](u32 value)
+    {
+        a = (a ^ value) * 16777619u;
+        b = (b + value) * 0x85EBCA6Bu;
+        b ^= b >> 13;
+    };
+    mix(controller->State());
+    mix(LivesOf(0));
+    mix(static_cast<u32>(g_RandomSeed));
+    mix((g_Swapped ? 1u : 0u) | (g_Joined ? 2u : 0u) | (g_Down[0] ? 4u : 0u) | (g_Down[1] ? 8u : 0u));
+    InstanceContext* players[2] = { Primary(controller), Second() };
+    for (InstanceContext* player : players)
+    {
+        auto* node = player != nullptr ? static_cast<ObjectNode*>(GetGameNode(&player->nodes, NodeObject)) : nullptr;
+        if (node == nullptr)
+        {
+            mix(0);
+            continue;
+        }
+
+        // (the position's three floats, bit for bit)
+        const u8* bytes = reinterpret_cast<const u8*>(&node->frameStart);
+        for (u32 at = 0; at < 12; at += 4)
+        {
+            mix(static_cast<u32>(bytes[at]) | static_cast<u32>(bytes[at + 1]) << 8 | static_cast<u32>(bytes[at + 2]) << 16 |
+                static_cast<u32>(bytes[at + 3]) << 24);
+        }
+    }
+
+    Platform::Graphics::FrameStart mark = {};
+    mark.x = static_cast<s32>(a);
+    mark.y = static_cast<s32>(b);
+    mark.red = 0xC1;
+    mark.blue = 0x0F;
+    Platform::Graphics::StartFrame(mark);
+}
+
 // ---- the split screen ----------------------------------------------------------------------------------------------------
 bool g_SideBySide = false;
 bool g_Split = false;
@@ -758,6 +801,10 @@ void StepCoop(GameController* controller)
     g_Online = AskOnline();
     StepPlayers(controller);
     StepSplit(controller);
+    if (g_Online)
+    {
+        TellState(controller);
+    }
 }
 
 bool CoopIsSecondPlayer(InstanceContext* instance)
