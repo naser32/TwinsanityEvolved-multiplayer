@@ -1,0 +1,10 @@
+{
+  "id": "online",
+  "name": "online",
+  "version": "0.1.0",
+  "description": "naser949's two-player mod, online. Options > Mods > online : host a lobby | join with the copied code | leave. The host's game puts the lobby's code (its address on the network the two players share: Radmin VPN, ZeroTier, a LAN) on the screen and in the clipboard; the friend copies it and joins. The host's game is sent to the friend's (a save state both load), then the two games run in step, exchanging only the pads: the host is player 1, the friend the two-player mod's player 2 (press start to join), each on a whole screen with a camera of their own. Both need the same build, the same disc and the same mods and settings. Saves made with it open go to the -mods card.",
+  "hooks": [],
+  "settings": {},
+  "api": "c",
+  "source": "platform/nativeee/host/netplay.cpp"
+}

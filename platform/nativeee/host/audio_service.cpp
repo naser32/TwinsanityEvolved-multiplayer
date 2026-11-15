@@ -22,6 +22,7 @@
 #include "stream_service.h"
 #include "te_audio.h"
 #include "te_prof.h"
+#include "te_netplay.h"
 #include "te_services.h"
 #if defined(_WIN32)
 #include <io.h>
@@ -984,7 +985,7 @@ bool AudioService::MusicReadyWaitsForCard() {
     // the deterministic profile: ready at once, PlayMusic waiting for the first blocks (the same answers whatever the card);
     // TE_STREAM_WAIT_CARD=1 the same in play (the A/B)
     static const bool knob = std::getenv("TE_STREAM_WAIT_CARD") && std::getenv("TE_STREAM_WAIT_CARD")[0] == '1';
-    return te::GetSettings().deterministic || knob;
+    return te::GetSettings().deterministic || knob || te::netplay::Lockstep();   // (online: the same answers on both machines)
 }
 
 int32_t AudioService::PlayMusic(int32_t channel) {

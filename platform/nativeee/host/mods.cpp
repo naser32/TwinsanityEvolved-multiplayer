@@ -319,6 +319,7 @@ void OnLoad(const std::string& save, const std::string& file) {
 void RegisterLevelSelect();
 void RegisterSpeedrun();
 void RegisterInfiniteLives();
+void RegisterOnline();   // netplay.cpp (naser949's two-player mod, online)
 
 void RegisterBuiltins() {
     static bool registered = false;
@@ -327,6 +328,7 @@ void RegisterBuiltins() {
     RegisterLevelSelect();
     RegisterSpeedrun();
     RegisterInfiniteLives();
+    RegisterOnline();
 }
 
 void InstallBuiltins() {

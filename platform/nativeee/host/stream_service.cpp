@@ -16,6 +16,7 @@
 #include "te_host.h"
 #include "te_link_ahead.h"
 #include "te_prof.h"
+#include "te_netplay.h"   // (online: a load's reads land as under the deterministic profile -- the same boundary on both machines)
 #include "te_services.h"
 
 namespace te::stream {
@@ -345,12 +346,12 @@ void StreamService::LandPending(int32_t channel, const char* site) {
     Land(channel, p);
 }
 
-bool StreamService::LandingWaits() { return te::GetSettings().deterministic || WaitCardKnob(); }
+bool StreamService::LandingWaits() { return te::GetSettings().deterministic || WaitCardKnob() || te::netplay::Lockstep(); }
 
 bool StreamService::Due(const Pending& p, double frame_end_ms) {
     // a load's read: in place once its bytes are -- at once under the deterministic profile (the landing waits for the reader
     // thread: the same landings as a computer's synchronous read), else once the reader thread is done with it
-    if (p.device) return !p.read || te::GetSettings().deterministic || te::io::Done(p.read.get());
+    if (p.device) return !p.read || te::GetSettings().deterministic || te::netplay::Lockstep() || te::io::Done(p.read.get());
     // the drive model's time; and in play, a read on the reader thread once the card has given its bytes too (the card slower
     // than the drive: the read stays in flight and lands at the first poll / boundary after that -- the game polls on, as it
     // did with a slow DVD; under the deterministic profile the landing waits for them: the model's exact landings)

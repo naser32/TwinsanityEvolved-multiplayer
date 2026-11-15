@@ -107,6 +107,7 @@ extern "C" size_t vglMemFree(int type);
 #include "te_mesh_builder.h"
 #include "te_prof.h"
 #include "te_services.h"
+#include "te_netplay.h"
 #include "te_sync.h"
 #include "te_tick_lock.h"
 #include "vita_gpu_census.h"
@@ -1459,14 +1460,22 @@ bool SameState(const ps2e_draw_state& a, const ps2e_draw_state& b) {
 struct ViewScissor {
     bool on = false;
     bool second = false;   // the second half (bottom, right): its draws' interpolation tags kept apart from the first's
+    bool hidden = false;   // online: the other player's view, held to one pixel (Viewed)
     int x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // inclusive frame pixels (ps2e_draw_state's scissor)
 };
 ViewScissor g_view_scissor;
+uint8_t g_online_view = 0;   // online (ps2e_graphics_start_frame's marker): 0, or 1 + the pad whose view is being drawn
 
 ps2e_draw_state Viewed(const ps2e_draw_state& in) {
     if (!g_view_scissor.on) return in;
     ps2e_draw_state s = in;
     const ViewScissor& v = g_view_scissor;
+    if (v.hidden) {
+        s.scissor_x0 = s.scissor_y0 = s.scissor_x1 = s.scissor_y1 = 0;
+        // (all zeros is "no scissor": the one pixel is the corner's neighbour column)
+        s.scissor_x0 = s.scissor_x1 = 1;
+        return s;
+    }
     if ((s.scissor_x0 | s.scissor_y0 | s.scissor_x1 | s.scissor_y1) == 0) {
         s.scissor_x0 = v.x0; s.scissor_y0 = v.y0; s.scissor_x1 = v.x1; s.scissor_y1 = v.y1;
     } else {
@@ -6382,6 +6391,8 @@ void ps2e_gfx2_frame_reset(ps2e_s32 movie) {
     (void)movie;
     ClearBuckets();
     g_view_scissor.on = false;   // (a split screen's half frame starts over with the next frame's StartFrame)
+    g_view_scissor.hidden = false;
+    g_online_view = 0;
     {
         const int left = g_split_pictures.load(std::memory_order_relaxed);
         if (left > 0) g_split_pictures.store(left - 1, std::memory_order_relaxed);
@@ -6393,6 +6404,12 @@ void ps2e_gfx2_frame_reset(ps2e_s32 movie) {
 void ps2e_graphics_start_frame(ps2e_u32 frame) {
     const FrameStart* f = Guest<FrameStart>(frame);
     if (!f) return;
+    if (f->width == 0 && f->height == 0 && f->red == 0xC0 && f->blue == 0x0F && !f->clearColor && !f->clearDepth) {
+        // the two-player mod online (game/src/game/coop.cpp MarkView): not a frame -- whose view the frames that follow are
+        // (green: 0 nobody's, the whole picture again; 1 + the pad of the view's player)
+        g_online_view = f->green;
+        return;
+    }
     g.frame = *f;
     g.have_frame = true;
     g.start_frames++;
@@ -6403,6 +6420,7 @@ void ps2e_graphics_start_frame(ps2e_u32 frame) {
         // (a half: the full width and half the height, or the full height and half the width -- no other frame of the game's)
         const bool halfHigh = f->width >= sw && std::abs(f->height * 2 - sh) <= 2;
         const bool halfWide = f->height >= sh && std::abs(f->width * 2 - sw) <= 2;
+        g_view_scissor.hidden = false;
         g_view_scissor.on = f->width > 0 && f->height > 0 && (halfHigh || halfWide);
         g_view_scissor.second = fx > 0 || fy > 0;
         if (g_view_scissor.on) g_split_pictures.store(3, std::memory_order_relaxed);
@@ -6410,6 +6428,18 @@ void ps2e_graphics_start_frame(ps2e_u32 frame) {
         g_view_scissor.y0 = std::max(fy, 0);
         g_view_scissor.x1 = std::min(fx + f->width, sw) - 1;
         g_view_scissor.y1 = std::min(fy + f->height, sh) - 1;
+        // online: both players' views are frames the size of the screen, and this machine shows its own player's -- the
+        // other's draws are held to one corner pixel (recorded as before, so the game does the same work on both machines)
+        const int local = te::netplay::LocalPad();
+        if (g_online_view != 0 && local >= 0 && f->width > 0 && f->height > 0) {
+            g_view_scissor.on = true;
+            g_view_scissor.second = g_online_view == 2;
+            g_split_pictures.store(3, std::memory_order_relaxed);
+            if (int(g_online_view) - 1 != local) {
+                g_view_scissor.x0 = g_view_scissor.y0 = g_view_scissor.x1 = g_view_scissor.y1 = 0;
+                g_view_scissor.hidden = true;
+            }
+        }
     }
     EnsureDevice();
     if (!f->clearColor && !f->clearDepth) return;

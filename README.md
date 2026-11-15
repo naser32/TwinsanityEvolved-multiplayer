@@ -9,7 +9,7 @@ this repository — you need your own disc image, which is read at run time.
 
 ## Two players (naser949's mod)
 
-This fork adds a second player on a second controller, on a split screen (local; online play comes later).
+This fork adds a second player on a second controller, on a split screen, and online (below).
 
 - Connect two controllers. The first one plays player 1, the second one is player 2.
 - While you play, press **START** on the second controller: a second copy of your character appears beside you.
@@ -33,6 +33,24 @@ This fork adds a second player on a second controller, on a split screen (local;
 
 The code: `game/src/game/coop.cpp` (the game side), `platform/nativeee/host/te_input.cpp` (the second controller feeds pad 1),
 `platform/nativeee/host/graphics.cpp` (each half's draws held to its half).
+
+### Online (experimental, first version)
+
+Two PCs, each player on a whole screen with a camera of their own. Both players need the **same build** of this fork, the
+**same disc** (the same ISO region) and the same mods and settings, and a network the two share: both install
+[Radmin VPN](https://www.radmin-vpn.com/) (or ZeroTier) and join the same network there, or sit on the same LAN.
+
+- **Host**: in the game, Options > Mods > **online** > **host a lobby**. The lobby's code shows on the screen and is copied
+  to the clipboard: send it to your friend. Allow the game through the Windows firewall when it asks.
+- **Friend**: copy the code, then Options > Mods > online > **join with the copied code** (from the title's options or in
+  a game, it does not matter where: the host's game replaces yours for the session).
+- The host's game is sent to the friend (a few seconds to a minute, the host's game waits), then both play: the host is
+  player 1, the friend presses **START** to come in as player 2. **leave** closes it.
+- The two games exchange only the buttons, so both must stay exactly alike. Every 10 seconds they compare; when they
+  differ the host's game is sent again (a short pause). The log (run with `2> log.txt`) says how often that happened.
+- While the online page has been opened the game saves to the mods' memory card (`-mods`), as with any mod: the friend's
+  own saves are not touched by the host's game.
+- Not yet: the save-state keys (F5 / F8) and the speedrun mod during a session; more than two players.
 
 ## What's new
 

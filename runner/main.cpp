@@ -63,6 +63,7 @@
 #include "te_prof.h"
 #include "te_savestate.h"
 #include "te_savestate_keys.h"
+#include "te_netplay.h"
 #include "te_math_diag.h"
 #include "te_startup.h"
 #if defined(__vita__)
@@ -613,6 +614,7 @@ int main(int argc, char** argv) {
         }
         if (root.empty()) root = te::startup::DataDirectory();
         te::savestate_keys::Install(root, save_slot);
+        te::netplay::Install(root);   // naser949's two-player mod, online (Options > Mods > online)
     }
     te::mods::ScanFolder(mods_dir);
     te::mods::SetOrder(mods_order);
@@ -992,6 +994,7 @@ int main(int argc, char** argv) {
                 else
                     std::fprintf(stderr, "[twinsanityevolved] savestate: %s.meta not written: %s\n", g_save_now.c_str(), meta_error.c_str());
             }
+            te::netplay::Saved(g_save_now, saved, error);   // (the two-player mod's online session: its state to send)
             te::savestate_keys::Saved(g_save_now, saved, error);   // F5's own answer on screen (the others' are the log's)
             continue;
         }
@@ -1002,6 +1005,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "[twinsanityevolved] savestate: %s not loaded: %s (the game continues)\n", g_load_now.c_str(), error.c_str());
             else
                 std::fprintf(stderr, "[twinsanityevolved] savestate: %s loaded in place\n", g_load_now.c_str());
+            te::netplay::Loaded(g_load_now, loaded, error);
             te::savestate_keys::Loaded(g_load_now, loaded, error);
             continue;
         }
