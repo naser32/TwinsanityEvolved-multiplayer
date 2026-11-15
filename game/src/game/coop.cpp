@@ -273,6 +273,107 @@ f32 TiltShare()
     return CameraTilt[value < 0 ? 0 : value > 2 ? 2 : value];
 }
 
+// ---- online (the platform's netplay: platform/nativeee/host/te_netplay.h) ------------------------------------------------
+// Two machines run this same game in step, each showing ONE player's view on its whole screen. The game does on both what a
+// split screen does (two renderers, two cameras) with both views the size of the screen, and tells the platform whose view
+// the frames that follow are (MarkView); the platform draws its own player's and lets the other's go. Whether a session runs
+// is the platform's to say: the game asks it through the mods' page of that name (a row no page shows), every frame.
+s32 g_OnlineMod = -2;
+bool g_Online = false;
+bool g_SplitOnline = false;
+
+bool AskOnline()
+{
+    char text[32];
+    if (g_OnlineMod == -2)
+    {
+        g_OnlineMod = -1;
+        const char* name = "online";
+        for (u32 mod = 0; mod < 16 && g_OnlineMod < 0; mod++)
+        {
+            text[0] = 0;
+            Platform::System::ModPageLabel(mod, text, sizeof(text));
+            u32 at = 0;
+            while (name[at] != 0 && text[at] == name[at])
+            {
+                at++;
+            }
+
+            if (name[at] == 0 && text[at] == 0)
+            {
+                g_OnlineMod = static_cast<s32>(mod);
+            }
+        }
+    }
+
+    if (g_OnlineMod < 0)
+    {
+        return false;
+    }
+
+    text[0] = 0;
+    Platform::System::ModPageRowLabel(static_cast<u32>(g_OnlineMod), 100, text, sizeof(text));
+    return text[0] == '1';
+}
+
+// Whose view the frames that follow are: 0 nobody's (the whole picture: the HUD, the menus), else 1 + the player
+void MarkView(u32 view)
+{
+    if (!g_SplitOnline)
+    {
+        return;
+    }
+
+    Platform::Graphics::FrameStart mark = {};
+    mark.red = 0xC0;
+    mark.green = static_cast<u8>(view);
+    mark.blue = 0x0F;
+    Platform::Graphics::StartFrame(mark);
+}
+
+// The game's account of itself after this frame, for the two machines to compare: where both players are, the game's state,
+// the lives, the random seed (when two games fall out of step these differ within moments; the host's is then sent again)
+void TellState(GameController* controller)
+{
+    u32 a = 2166136261u;
+    u32 b = 0x9E3779B9u;
+    auto mix = [&](u32 value)
+    {
+        a = (a ^ value) * 16777619u;
+        b = (b + value) * 0x85EBCA6Bu;
+        b ^= b >> 13;
+    };
+    mix(controller->State());
+    mix(LivesOf(0));
+    mix(static_cast<u32>(g_RandomSeed));
+    mix((g_Swapped ? 1u : 0u) | (g_Joined ? 2u : 0u) | (g_Down[0] ? 4u : 0u) | (g_Down[1] ? 8u : 0u));
+    InstanceContext* players[2] = { Primary(controller), Second() };
+    for (InstanceContext* player : players)
+    {
+        auto* node = player != nullptr ? static_cast<ObjectNode*>(GetGameNode(&player->nodes, NodeObject)) : nullptr;
+        if (node == nullptr)
+        {
+            mix(0);
+            continue;
+        }
+
+        // (the position's three floats, bit for bit)
+        const u8* bytes = reinterpret_cast<const u8*>(&node->frameStart);
+        for (u32 at = 0; at < 12; at += 4)
+        {
+            mix(static_cast<u32>(bytes[at]) | static_cast<u32>(bytes[at + 1]) << 8 | static_cast<u32>(bytes[at + 2]) << 16 |
+                static_cast<u32>(bytes[at + 3]) << 24);
+        }
+    }
+
+    Platform::Graphics::FrameStart mark = {};
+    mark.x = static_cast<s32>(a);
+    mark.y = static_cast<s32>(b);
+    mark.red = 0xC1;
+    mark.blue = 0x0F;
+    Platform::Graphics::StartFrame(mark);
+}
+
 // ---- the split screen ----------------------------------------------------------------------------------------------------
 bool g_SideBySide = false;
 bool g_Split = false;
@@ -338,6 +439,7 @@ void EndSplit(GameController* controller)
     }
 
     g_Split = false;
+    g_SplitOnline = false;
     TakeWhole(controller->renderer->target);
     if (g_SecondRenderer != nullptr)
     {
@@ -391,14 +493,24 @@ void StepSplit(GameController* controller)
         g_SecondView = RenderView::Construct(static_cast<RenderView*>(MemoryAllocate(sizeof(RenderView))));
     }
 
-    if (!g_Split || g_SplitSideBySide != g_SideBySide || g_SplitSwapped != g_Swapped)
+    if (!g_Split || g_SplitSideBySide != g_SideBySide || g_SplitSwapped != g_Swapped || g_SplitOnline != g_Online)
     {
         g_Split = true;
         g_SplitSideBySide = g_SideBySide;
         g_SplitSwapped = g_Swapped;
-        // The game's renderer draws the primary's player's half (player 1: top, left), the second renderer the other's
-        TakeHalf(first->target, g_Swapped, g_SideBySide);
-        TakeHalf(g_SecondRenderer->target, !g_Swapped, g_SideBySide);
+        g_SplitOnline = g_Online;
+        if (g_Online)
+        {
+            // Online: both views the size of the screen (each machine shows one)
+            TakeWhole(first->target);
+            TakeWhole(g_SecondRenderer->target);
+        }
+        else
+        {
+            // The game's renderer draws the primary's player's half (player 1: top, left), the second renderer the other's
+            TakeHalf(first->target, g_Swapped, g_SideBySide);
+            TakeHalf(g_SecondRenderer->target, !g_Swapped, g_SideBySide);
+        }
     }
 
     g_SecondRenderer->flags.draws = 1;
@@ -686,8 +798,13 @@ void StepPlayers(GameController* controller)
 void StepCoop(GameController* controller)
 {
     CoopUntiltCameras();
+    g_Online = AskOnline();
     StepPlayers(controller);
     StepSplit(controller);
+    if (g_Online)
+    {
+        TellState(controller);
+    }
 }
 
 bool CoopIsSecondPlayer(InstanceContext* instance)
@@ -833,6 +950,7 @@ bool CoopDrawScenes()
     {
         g_RenderView = g_SecondRenderer->view;
         g_RenderTarget = g_SecondRenderer->target;
+        MarkView(1 + SecondaryPlayer());
         SetUpFrame(g_SecondRenderer->target, 0, 0);
         Platform::Graphics::UseHelperPrograms(Platform::Graphics::CullingPrograms, false);
         ParticleViews views;
@@ -858,6 +976,7 @@ void CoopBeginScene(Renderer* renderer)
     }
 
     g_StampMark = renderer == g_SecondRenderer ? SecondPassMark : 0;
+    MarkView(1 + (renderer == g_SecondRenderer ? SecondaryPlayer() : 1 - SecondaryPlayer()));
     SetUpFrame(renderer->target, 0, 0);
 }
 
@@ -869,6 +988,7 @@ void CoopEndScene()
     }
 
     g_StampMark = 0;
+    MarkView(0);
     SetUpFrame(g_Whole, 0, 0);
     g_RenderTarget = g_Whole;
 }
@@ -901,6 +1021,8 @@ void CoopAfterScenes()
     GameController* controller = G_GameController;
     g_RenderView = &controller->view;
     g_RenderTarget = controller->renderer->target;
+    // (what follows the scenes is the game's own renderer's: the primary's player's view)
+    MarkView(1 + (1 - SecondaryPlayer()));
     SetUpFrame(controller->renderer->target, 0, 0);
 }
 
@@ -908,6 +1030,7 @@ void CoopBeforeHud()
 {
     if (g_Split)
     {
+        MarkView(0);
         SetUpFrame(g_Whole, 0, 0);
         g_RenderTarget = g_Whole;
     }
@@ -1295,7 +1418,8 @@ void CoopQueueHud()
         }
     }
 
-    if (!g_Split)
+    // (online each screen is one player's: no half to name)
+    if (!g_Split || g_SplitOnline)
     {
         return;
     }

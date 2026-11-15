@@ -37,6 +37,12 @@ bool KeyHeld(const char* key_name);
 // pump (ps2e_draw_pump) takes it at the next boundary and the runner exits 0 through te::RequestExit.
 bool RequestWindowClose();
 void Shutdown();
+// TwinsanityEvolved (naser949's two-player mod, online: te_netplay.h). The clipboard's text ("" without SDL input or
+// when it holds none) and a text put in it; KeepAlive: the window's events taken while the game thread waits for the
+// other machine (a state sent or awaited), so the window answers and its close button still ends the run.
+std::string Clipboard();
+void SetClipboard(const std::string& text);
+void KeepAlive();
 
 }  // namespace input
 }  // namespace te

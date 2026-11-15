@@ -35,6 +35,7 @@
 #include "te_tick_lock.h"
 #include "te_weak.h"
 #include "te_services.h"
+#include "te_netplay.h"
 #include <cstring>
 #include <string>
 #include <vector>
@@ -323,9 +324,22 @@ void Clock::Boundary() {
             if (planned > 1) i.protocol.ParkForPacerTicks(planned);
             else i.protocol.ParkForPacerTick();
         }
-        const int n = i.ticks.FirePending();
-        if (n == 0) i.ticks.FireInline(TickSync::Cause::Boundary);
-        fired = n > 0 ? uint32_t(n) : 1u;
+        if (netplay::Lockstep()) {
+            // TwinsanityEvolved (naser949's two-player mod, online: te_netplay.h): one field a boundary whatever the wall did
+            // -- the two machines' game clocks must count the same fields; the ticks a late frame left noted are let go
+            // (the game slows down instead of skipping), and the pictures' field edges follow the pacer's count
+            if (i.ticks.FirePendingOne() == 0) i.ticks.FireInline(TickSync::Cause::Boundary);
+            const uint64_t left = i.ticks.Pending();
+            if (left > 0) {
+                i.ticks.DropPending(left);
+                i.field_offset -= int64_t(left);
+            }
+            fired = 1;
+        } else {
+            const int n = i.ticks.FirePending();
+            if (n == 0) i.ticks.FireInline(TickSync::Cause::Boundary);
+            fired = n > 0 ? uint32_t(n) : 1u;
+        }
     } else {
         i.ticks.FireInline(TickSync::Cause::Boundary);
         i.ticks.FirePending();

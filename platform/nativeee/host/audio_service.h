@@ -69,6 +69,9 @@ public:
     int32_t InitialiseRemote();
     void CloseDevice();
     bool DeviceOpen() const;
+    // The game thread waits on something long (the two-player mod online: a state sent or awaited): what the device pulls
+    // meanwhile is silence, not the last tail over and over
+    void Quiet(bool on);
     // 60 (default) or 50: frames per tick = 48000 / hz. Set by the clock/vsync owner before the first boundary.
     void SetBoundaryHz(uint32_t hz);
     uint32_t BoundaryHz() const { return hz_; }

@@ -16,6 +16,7 @@
 
 #include "te_host.h"
 #include "te_input.h"
+#include "te_netplay.h"
 #if defined(__vita__)
 #include <psp2/kernel/processmgr.h>   // sceKernelPowerTick
 #include "../../../runner/te_vita.h"
@@ -358,7 +359,13 @@ bool Install(Pads& pads, const Settings& settings) {
     const float dt = 1.0f / static_cast<float>(hz);
     pads.SetSampler([dt](unsigned port, unsigned slot) -> Pads::Sample {
         Pads::Sample s;
-        if (port == 1 && slot == 0) return SecondPadSample();   // the two-player mod's second controller (above)
+        if (port == 1 && slot == 0) {
+            // the two-player mod's second player: the other machine's pad while an online session runs (te_netplay.h),
+            // else the second controller (above)
+            Pads::Sample remote;
+            if (te::netplay::Pad1(remote)) return remote;
+            return SecondPadSample();
+        }
         if (port != 0 || slot != 0) return s;   // the engine's InputSystem is pad 0
         // (the device's "hook pads" was 0.4-0.6 ms a tick: its two halves as their own sections, TE_PROF=1; the game
         // thread's slot, no thread_local read)
@@ -431,6 +438,7 @@ bool Install(Pads& pads, const Settings& settings) {
         s.connected = g_input->Connected() || te::GetSettings().pad_connected;
         s.buttons = p.buttons;
         s.lx = p.lx; s.ly = p.ly; s.rx = p.rx; s.ry = p.ry;
+        s = te::netplay::Pad0(s);   // (online: both machines' pads for this boundary, te_netplay.h; else `s` as it is)
 #if defined(__vita__)
         if (g_vpad.on && g_vpad.check_every && g_vpad.reads % g_vpad.check_every == 0) {
             CheckVitaPad(g_vpad);
@@ -521,6 +529,40 @@ void Shutdown() {
     if (g_events_inited) { SDL_QuitSubSystem(SDL_INIT_EVENTS); g_events_inited = false; }
 #endif
     g_installed = false;
+}
+
+std::string Clipboard() {
+#if TE_HAVE_SDL_INPUT
+    if (!SDL_WasInit(SDL_INIT_VIDEO) || !SDL_HasClipboardText()) return std::string();
+    char* text = SDL_GetClipboardText();
+    std::string out = text ? text : "";
+    if (text) SDL_free(text);
+    return out;
+#else
+    return std::string();
+#endif
+}
+
+void SetClipboard(const std::string& text) {
+#if TE_HAVE_SDL_INPUT
+    if (SDL_WasInit(SDL_INIT_VIDEO)) SDL_SetClipboardText(text.c_str());
+#else
+    (void)text;
+#endif
+}
+
+void KeepAlive() {
+#if TE_HAVE_SDL_INPUT
+    if (!g_installed || !g_pump_owned || !g_input) return;
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {
+        if (e.type == SDL_QUIT || (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_CLOSE)) {
+            std::fprintf(stderr, "[te.gfx] window closed: exit\n");
+            te::RequestExit(0);
+        }
+        g_input->HandleEvent(e);
+    }
+#endif
 }
 
 }  // namespace te::input

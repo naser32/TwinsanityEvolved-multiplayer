@@ -1,5 +1,6 @@
 // savestate_keys.cpp -- see te_savestate_keys.h.
 #include "te_savestate_keys.h"
+#include "te_netplay.h"
 
 #include <cstdio>
 #include <vector>
@@ -75,6 +76,12 @@ void OnBoundary(uint64_t boundary) {
         held = now;
         return pressed;
     };
+    // (the two-player mod online: a state of this machine's own would take its game out of the session's)
+    if (netplay::LocalPad() >= 0) {
+        const bool save = edge(kKeySave, g.held_save), load = edge(kKeyLoad, g.held_load);
+        if (save || load) Show("no save states during an online game");
+        return;
+    }
     if (edge(kKeySave, g.held_save)) {
         const std::string dir = Directory(g.root);
         const std::string path = SlotPath(g.root, g.slot);
